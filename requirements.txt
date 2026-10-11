@@ -1,0 +1,4 @@
+# botslab-cloud runs on the Python standard library — no required dependencies.
+# Optional:
+#   certifi      # used automatically for CA bundle if installed
+#   curl_cffi    # only needed if you want to experiment with TLS/JA3 impersonation

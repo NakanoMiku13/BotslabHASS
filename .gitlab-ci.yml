@@ -1,0 +1,30 @@
+# CI for botslab-cloud. No secrets required — tests are offline.
+stages: [lint, test]
+
+default:
+  image: python:3.12-slim
+
+# Fail fast if any real secret/session ever gets committed by accident.
+secret-scan:
+  stage: lint
+  script:
+    - echo "Scanning for accidentally committed secrets/session values..."
+    - >
+      if grep -rEn "jws [A-Za-z0-9+/=]{40,}|BOTSLAB_SID=botslab_|sk%3D[0-9a-f]{32}|sk=[0-9a-f]{32}" .
+      --include="*.py" --include="*.md" --include="*.env*"
+      | grep -v ".env.example" ; then
+        echo "ERROR: possible secret/session committed"; exit 1;
+      fi
+    - echo "clean."
+
+compile:
+  stage: lint
+  script:
+    - python -m py_compile botslab_client.py
+    - python -m py_compile tests/test_signer.py
+
+unit-tests:
+  stage: test
+  script:
+    - python -m unittest discover -s tests -v
+    - python botslab_client.py selftest
