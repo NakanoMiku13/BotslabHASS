@@ -1,0 +1,201 @@
+"""Async Botslab cloud API client (read path; control added once mapped).
+
+Mirrors the proven request logic from the standalone ``botslab_client.py``:
+signed query params + ``authorization: jws base64({Q,T,sid})``.
+
+No secrets here — all config is passed in by the caller (config entry).
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import time
+import uuid
+from dataclasses import dataclass
+
+import aiohttp
+
+
+class BotslabError(Exception):
+    """Generic API error."""
+
+
+class BotslabAuthError(BotslabError):
+    """Session invalid/expired (code 100003, or token rejected)."""
+
+
+@dataclass
+class BotslabSession:
+    """Everything needed to sign + authenticate a request."""
+
+    q: str
+    t: str
+    sid: str
+    m2: str
+    product_key: str
+    device_name: str
+    sign_secret: str
+    region: str = "na1"
+    appkey: str = "botslabadr"
+    appver: str = "2.31.2"
+
+    @property
+    def host(self) -> str:
+        return f"{self.region}-sapp-api.botslab.com"
+
+
+# Client-info params for the device/dio layer.
+_CI = {
+    "ci_net": "WIFI",
+    "ci_model": "sdk_gphone64_arm64",
+    "ci_lang": "en-US",
+    "ci_cy": "US",
+    "ci_brand": "google",
+    "ci_osver": "35",
+    "ci_tz": "UTC-6",
+    "appch": "fwq",
+    "app_type_id": "1",
+    "appflag": "online",
+    "skillflag": "online",
+}
+
+
+class BotslabApi:
+    def __init__(self, session: aiohttp.ClientSession, cfg: BotslabSession) -> None:
+        self._session = session
+        self._cfg = cfg
+
+    # -- signing / auth ---------------------------------------------------- #
+    def _sign_fields(self) -> dict:
+        ts = str(int(time.time()))
+        no = uuid.uuid1().hex
+        raw = self._cfg.appkey + self._cfg.m2 + ts + no + self._cfg.sign_secret
+        return {
+            "appkey": self._cfg.appkey,
+            "m2": self._cfg.m2,
+            "sign_ts": ts,
+            "sign_no": no,
+            "sign": hashlib.md5(raw.encode()).hexdigest().lower(),
+        }
+
+    def _params(self, extra: dict | None = None) -> dict:
+        p = dict(_CI)
+        p["appver"] = self._cfg.appver
+        p.update(self._sign_fields())
+        if extra:
+            p.update(extra)
+        return p
+
+    def _auth(self) -> str:
+        payload = {"Q": self._cfg.q, "T": self._cfg.t, "sid": self._cfg.sid}
+        return "jws " + base64.b64encode(
+            json.dumps(payload, separators=(",", ":")).encode()
+        ).decode()
+
+    # -- transport --------------------------------------------------------- #
+    async def _get(self, path: str, extra: dict | None = None) -> dict:
+        url = f"https://{self._cfg.host}{path}"
+        headers = {"authorization": self._auth(), "User-Agent": "okhttp/4.2.0"}
+        try:
+            async with self._session.get(
+                url, params=self._params(extra), headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                data = await resp.json(content_type=None)
+        except aiohttp.ClientError as exc:
+            raise BotslabError(f"network error on {path}: {exc}") from exc
+        code = data.get("code")
+        if code == 0:
+            return data.get("data", {})
+        if code in (100003, 1015):  # token invalid / missing-session
+            raise BotslabAuthError(f"{path}: code {code} {data.get('msg')}")
+        raise BotslabError(f"{path}: code {code} {data.get('msg')}")
+
+    # -- reads ------------------------------------------------------------- #
+    async def device_list(self) -> list[dict]:
+        data = await self._get("/v1/iot/device/list", {"bind_type": "0"})
+        return data.get("devices", [])
+
+    async def get_info(self) -> dict:
+        return await self._get(
+            "/v1/iot/device/get_info",
+            {"product_key": self._cfg.product_key, "device_name": self._cfg.device_name},
+        )
+
+    async def get_property(self) -> dict:
+        """Live reported state (data.result is a JSON string of identifier->value)."""
+        data = await self._get(
+            "/v1/iot/device/get_property",
+            {"product_key": self._cfg.product_key, "device_name": self._cfg.device_name},
+        )
+        result = data.get("result")
+        if isinstance(result, str):
+            try:
+                return json.loads(result)
+            except json.JSONDecodeError:
+                return {}
+        return result or {}
+
+    async def get_desired_property(self) -> dict:
+        data = await self._get(
+            "/v1/iot/device/get_desired_property",
+            {"product_key": self._cfg.product_key, "device_name": self._cfg.device_name},
+        )
+        out: dict = {}
+        for item in data.get("report", []):
+            out[item.get("identifier")] = item.get("value")
+        return out
+
+    async def get_dsl(self) -> dict:
+        """Product TSL model (services/Attributes/Events). Needs device_name."""
+        return await self._get(
+            "/v1/iot/product/get_dsl",
+            {"product_key": self._cfg.product_key, "device_name": self._cfg.device_name},
+        )
+
+    # -- control ----------------------------------------------------------- #
+    async def _post(self, path: str, body: dict) -> dict:
+        url = f"https://{self._cfg.host}{path}"
+        headers = {
+            "authorization": self._auth(),
+            "User-Agent": "okhttp/4.2.0",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        try:
+            async with self._session.post(
+                url, params=self._params(), data=body, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                data = await resp.json(content_type=None)
+        except aiohttp.ClientError as exc:
+            raise BotslabError(f"network error on {path}: {exc}") from exc
+        code = data.get("code")
+        if code == 0:
+            return data.get("data", {})
+        if code in (100003, 1015):
+            raise BotslabAuthError(f"{path}: code {code} {data.get('msg')}")
+        raise BotslabError(f"{path}: code {code} {data.get('msg')}")
+
+    async def invoke_service(self, identifier: str, input_args: dict | None = None) -> dict:
+        """POST /invoke_service — identifier = TSL service name, input = JSON string."""
+        return await self._post(
+            "/v1/iot/device/invoke_service",
+            {
+                "product_key": self._cfg.product_key,
+                "device_name": self._cfg.device_name,
+                "identifier": identifier,
+                "input": json.dumps(input_args or {}, separators=(",", ":")),
+            },
+        )
+
+    async def set_desired_property(self, identifier: str, value) -> dict:
+        """POST /set_desired_property — items = JSON string {identifier: value}."""
+        return await self._post(
+            "/v1/iot/device/set_desired_property",
+            {
+                "product_key": self._cfg.product_key,
+                "device_name": self._cfg.device_name,
+                "items": json.dumps({identifier: value}, separators=(",", ":")),
+            },
+        )

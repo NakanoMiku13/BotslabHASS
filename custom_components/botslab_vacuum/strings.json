@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Botslab Vacuum (360/Qihoo)",
+        "description": "Paste a captured 360 session. See the repo's docs/SESSION-CAPTURE.md for how to obtain these.",
+        "data": {
+          "q": "360 Q cookie",
+          "t": "360 T cookie",
+          "sid": "cloudspirit session id (sid)",
+          "m2": "App install UUID (m2)",
+          "sign_secret": "App sign secret",
+          "region": "Region (na1/ap1/eu1/eu2)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Botslab",
+        "description": "Your 360 session expired. Paste fresh Q / T / sid values.",
+        "data": {
+          "q": "360 Q cookie",
+          "t": "360 T cookie",
+          "sid": "cloudspirit session id (sid)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Session invalid or expired.",
+      "cannot_connect": "Could not reach the Botslab cloud.",
+      "no_devices": "No devices found on this account."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  }
+}

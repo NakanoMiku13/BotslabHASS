@@ -84,10 +84,37 @@ are in [`docs/`](docs/):
 - [x] Sign algorithm + full param set
 - [x] Auth token `jws{Q, T, sid}`
 - [x] Read: `device/list`, `get_info`, `get_property`, `get_desired_property`
-- [ ] `product/get_dsl` (TSL model) — needs different params (returns `1004` today)
-- [ ] Control: `invoke_service` / `set_property` (named TSL services)
-- [ ] Session refresh (automate the 360 login, or a Home-Assistant-style reauth prompt)
-- [ ] Home Assistant custom component (coordinator + vacuum entity)
+- [x] `product/get_dsl` (TSL model) — needed `device_name` (authoritative command catalog)
+- [x] Control: `invoke_service` / `set_desired_property` (named TSL services) — validated live
+- [x] Home Assistant custom component (coordinator + vacuum + sensors + config/reauth flow)
+- [ ] Session refresh / headless login — **blocked** (see below); reauth flow ships meanwhile
+
+## Home Assistant integration
+
+`custom_components/botslab_vacuum/` is a config-flow integration (no HACS needed —
+copy the folder into `config/custom_components/` and restart HA). It creates a
+`vacuum.*` entity (start / pause / stop / return / locate / fan speed) plus
+battery / status / error / suction / cleaning-area / volume sensors, polling the
+cloud shadow every 30 s. Configure it by pasting a captured session
+(`Q`/`T`/`sid`/`m2`/sign-secret); the device is auto-discovered. On expiry it
+raises a **reauth** prompt for fresh `Q`/`T`/`sid`.
+
+Control mapping (authoritative, from the product DSL) is in [`docs/CONTROL.md`](docs/CONTROL.md).
+
+## Login / session automation — status
+
+A fully headless "email + password → session" login is **not currently
+feasible**: the 360 account login encrypts its payload (`parad`/`ret` = RSA-1024
++ DES) inside a native, string-obfuscated `.so`, and the flow has captcha /
+device-verification branches. Worse, the `sid` cannot be fabricated — the server
+only accepts a real, registered session id. So automation would require native
+RE of the login crypto **and** the sid-registration flow (and may still hit
+captcha).
+
+What ships instead: **capture once + reauth on expiry**, with
+[`tools/extract_session.py`](tools/extract_session.py) turning a fresh capture
+into config values in one command. Pursuing true auto-login (native RE, or a
+frida-based session minter on a machine running the app) is future work.
 
 ---
 
