@@ -22,7 +22,13 @@ class BotslabError(Exception):
 
 
 class BotslabAuthError(BotslabError):
-    """Session invalid/expired (code 100003, or token rejected)."""
+    """Session invalid/expired/evicted -> triggers automatic re-login."""
+
+
+# Cloud response codes that mean "the session is no longer usable" and should
+# trigger a re-login: 100003 login-verification failed, 1015 missing/invalid
+# session (sid), 102003 "logged in on another device" (session evicted).
+AUTH_FAIL_CODES = {100003, 1015, 102003}
 
 
 @dataclass
@@ -108,7 +114,7 @@ class BotslabApi:
         code = data.get("code")
         if code == 0:
             return data.get("data", {})
-        if code in (100003, 1015):  # token invalid / missing-session
+        if code in AUTH_FAIL_CODES:
             raise BotslabAuthError(f"{path}: code {code} {data.get('msg')}")
         raise BotslabError(f"{path}: code {code} {data.get('msg')}")
 
@@ -173,7 +179,7 @@ class BotslabApi:
         code = data.get("code")
         if code == 0:
             return data.get("data", {})
-        if code in (100003, 1015):
+        if code in AUTH_FAIL_CODES:
             raise BotslabAuthError(f"{path}: code {code} {data.get('msg')}")
         raise BotslabError(f"{path}: code {code} {data.get('msg')}")
 

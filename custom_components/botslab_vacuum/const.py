@@ -5,6 +5,8 @@ DOMAIN = "botslab_vacuum"
 DEFAULT_SCAN_INTERVAL = 30  # seconds
 
 # Config entry keys
+CONF_EMAIL = "email"
+CONF_PASSWORD = "password"
 CONF_Q = "q"
 CONF_T = "t"
 CONF_SID = "sid"
@@ -13,6 +15,11 @@ CONF_PRODUCT_KEY = "product_key"
 CONF_DEVICE_NAME = "device_name"
 CONF_SIGN_SECRET = "sign_secret"
 CONF_REGION = "region"
+
+# App-wide constants (identical for every install of the Botslab Android app).
+# Used as defaults so the user only needs to enter email + password.
+DEFAULT_SIGN_SECRET = "qihu_adr_3afg139513ksgnlah1951365saa351a9z_360"
+DEFAULT_REGION = "na1"
 
 # TSL WorkingStatus enum -> Home Assistant VacuumActivity value
 # (from the product DSL: WorkingStatus / TEST_WorkingStatus)
