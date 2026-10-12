@@ -34,6 +34,94 @@ views:
           - entity: sensor.francisca_error_code
             name: Error
 
+      - type: entities
+        title: Ajustes
+        entities:
+          - entity: number.francisca_volume
+            name: Volumen
+          - entity: switch.francisca_auto_boost
+            name: Auto boost
+          - entity: select.francisca_mop_mode
+            name: Modo mopa
+          - entity: select.francisca_pad_wetness
+            name: Humedad mopa
+
+      - type: grid
+        title: Limpiar habitación
+        columns: 2
+        square: false
+        cards:
+          - type: button
+            name: Room 1
+            icon: mdi:floor-plan
+            tap_action:
+              action: perform-action
+              perform_action: botslab_vacuum.clean_rooms
+              target:
+                entity_id: vacuum.francisca
+              data:
+                room_ids: [0]
+          - type: button
+            name: Room 2
+            icon: mdi:floor-plan
+            tap_action:
+              action: perform-action
+              perform_action: botslab_vacuum.clean_rooms
+              target:
+                entity_id: vacuum.francisca
+              data:
+                room_ids: [1]
+          - type: button
+            name: Room 3
+            icon: mdi:floor-plan
+            tap_action:
+              action: perform-action
+              perform_action: botslab_vacuum.clean_rooms
+              target:
+                entity_id: vacuum.francisca
+              data:
+                room_ids: [2]
+          - type: button
+            name: Room 4
+            icon: mdi:floor-plan
+            tap_action:
+              action: perform-action
+              perform_action: botslab_vacuum.clean_rooms
+              target:
+                entity_id: vacuum.francisca
+              data:
+                room_ids: [3]
+          - type: button
+            name: Room 5
+            icon: mdi:floor-plan
+            tap_action:
+              action: perform-action
+              perform_action: botslab_vacuum.clean_rooms
+              target:
+                entity_id: vacuum.francisca
+              data:
+                room_ids: [4]
+          - type: button
+            name: Room 6
+            icon: mdi:floor-plan
+            tap_action:
+              action: perform-action
+              perform_action: botslab_vacuum.clean_rooms
+              target:
+                entity_id: vacuum.francisca
+              data:
+                room_ids: [5]
+          - type: button
+            name: Room 7
+            icon: mdi:floor-plan
+            tap_action:
+              action: perform-action
+              perform_action: botslab_vacuum.clean_rooms
+              target:
+                entity_id: vacuum.francisca
+              data:
+                room_ids: [6]
+
       - type: gauge
         entity: sensor.francisca_battery
         name: Batería
@@ -45,6 +133,14 @@ views:
           red: 0
           yellow: 20
           green: 50
+
+      - type: markdown
+        title: Programación
+        content: >
+          Crea horarios con **Ajustes para desarrolladores → Acciones →
+          `botslab_vacuum.set_schedule`** (hora, días, habitaciones en orden,
+          succión max/quiet, pasadas). Las habitaciones disponibles están en el
+          atributo `rooms` de `vacuum.francisca`.
 
       - type: history-graph
         title: Actividad (24 h)

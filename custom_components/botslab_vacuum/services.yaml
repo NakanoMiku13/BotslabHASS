@@ -1,0 +1,91 @@
+clean_rooms:
+  name: Clean rooms
+  description: Clean the selected rooms (by id, in the given order) now.
+  target:
+    entity:
+      domain: vacuum
+      integration: botslab_vacuum
+  fields:
+    room_ids:
+      name: Room ids
+      description: Room ids in the order to clean (see the vacuum entity's 'rooms' attribute).
+      required: true
+      example: "[2, 0, 1]"
+      selector:
+        object:
+    passes:
+      name: Passes
+      description: 1 = single pass, 2 = deep (two passes).
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 2
+    suction:
+      name: Suction level
+      description: 0 Quiet, 1 Normal, 2 Strong, 3 MAX.
+      selector:
+        number:
+          min: 0
+          max: 3
+
+set_schedule:
+  name: Set schedule
+  description: Create or replace a scheduled clean (time, days, rooms, order, suction).
+  target:
+    entity:
+      domain: vacuum
+      integration: botslab_vacuum
+  fields:
+    time:
+      name: Time
+      description: Start time HH:MM (24h).
+      required: true
+      example: "08:15"
+      selector:
+        time:
+    days:
+      name: Days
+      description: Weekdays (0=Sunday .. 6=Saturday).
+      required: true
+      example: "[1, 3, 5]"
+      selector:
+        object:
+    room_ids:
+      name: Room ids
+      description: Rooms to clean in order (empty = whole-house).
+      default: []
+      example: "[2, 1, 0]"
+      selector:
+        object:
+    suction:
+      name: Suction
+      default: auto
+      selector:
+        select:
+          options: [quiet, normal, strong, max, auto]
+    passes:
+      name: Passes
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 2
+    active:
+      name: Active
+      default: true
+      selector:
+        boolean:
+    order:
+      name: Clean in order
+      default: true
+      selector:
+        boolean:
+    slot:
+      name: Slot
+      description: Schedule index to replace (-1 = append new).
+      default: -1
+      selector:
+        number:
+          min: -1
+          max: 20

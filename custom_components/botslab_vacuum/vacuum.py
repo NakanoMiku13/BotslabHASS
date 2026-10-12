@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 
+import voluptuous as vol
 from homeassistant.components.vacuum import (
     StateVacuumEntity,
     VacuumActivity,
@@ -10,6 +11,8 @@ from homeassistant.components.vacuum import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -48,6 +51,32 @@ async def async_setup_entry(
 ) -> None:
     coordinator: BotslabCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([BotslabVacuum(coordinator)])
+
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        "clean_rooms",
+        {
+            vol.Required("room_ids"): vol.All(cv.ensure_list, [vol.Coerce(int)]),
+            vol.Optional("passes", default=1): vol.In([1, 2]),
+            vol.Optional("suction"): vol.In([0, 1, 2, 3]),
+        },
+        "async_clean_rooms",
+    )
+    platform.async_register_entity_service(
+        "set_schedule",
+        {
+            vol.Required("time"): str,                       # "HH:MM"
+            vol.Required("days"): vol.All(cv.ensure_list, [vol.All(vol.Coerce(int), vol.Range(0, 6))]),
+            vol.Optional("room_ids", default=[]): vol.All(cv.ensure_list, [vol.Coerce(int)]),
+            vol.Optional("suction", default="auto"): vol.In(
+                ["quiet", "normal", "strong", "max", "auto"]),
+            vol.Optional("passes", default=1): vol.In([1, 2]),
+            vol.Optional("active", default=True): cv.boolean,
+            vol.Optional("order", default=True): cv.boolean,
+            vol.Optional("slot", default=-1): vol.Coerce(int),
+        },
+        "async_set_schedule",
+    )
 
 
 class BotslabVacuum(CoordinatorEntity[BotslabCoordinator], StateVacuumEntity):
@@ -101,6 +130,9 @@ class BotslabVacuum(CoordinatorEntity[BotslabCoordinator], StateVacuumEntity):
                   "PadWetness", "VolumeLevel", "MoppingPadInstalled"):
             if k in s:
                 attrs[k] = s[k]
+        rooms = getattr(self.coordinator, "map_coordinator", None)
+        if rooms and rooms.rooms:
+            attrs["rooms"] = {r["id"]: r["name"] for r in rooms.rooms}
         return attrs
 
     # -- commands ---------------------------------------------------------- #
@@ -139,3 +171,56 @@ class BotslabVacuum(CoordinatorEntity[BotslabCoordinator], StateVacuumEntity):
             SVC_SUCTION, {"Mode": SUCTION_MODE_DEFAULT, "Level": level}
         )
         await self._after()
+
+    # -- custom services --------------------------------------------------- #
+    async def async_clean_rooms(self, room_ids, passes=1, suction=None) -> None:
+        """Clean the given rooms (by id, in order) via inline zone cleaning."""
+        rooms = {r["id"]: r for r in self.coordinator.map_coordinator.rooms}
+        zones = []
+        for rid in room_ids:
+            r = rooms.get(rid)
+            if not r or len(r.get("vertexs") or []) < 3:
+                continue
+            zones.append({
+                "name": r["name"], "id": rid, "tag": "",
+                "active": "depth" if passes == 2 else "normal",
+                "vertexs": r["vertexs"],
+            })
+        if not zones:
+            raise HomeAssistantError(
+                "No valid rooms selected (map not loaded yet, or unknown room ids). "
+                "See the 'rooms' attribute of this entity for valid ids."
+            )
+        if suction is not None:
+            await self.coordinator.api.invoke_service(
+                SVC_SUCTION, {"Mode": SUCTION_MODE_DEFAULT, "Level": int(suction)}
+            )
+        await self.coordinator.api.set_zones(zones)
+        await self.coordinator.api.start_clean_in_zones()
+        await self._after()
+
+    async def async_set_schedule(
+        self, time, days, room_ids=None, suction="auto", passes=1,
+        active=True, order=True, slot=-1,
+    ) -> None:
+        """Create/replace a scheduled clean (SetCleanPolicyList)."""
+        hh, mm = (int(x) for x in time.split(":")[:2])
+        policy = await self.coordinator.api.get_clean_policy()
+        value = policy.get("value") or []
+        map_id = self.coordinator.map_coordinator.map_id
+        if map_id is None and value:
+            map_id = value[0].get("mapId", 0)
+        entry = {
+            "startTime": hh * 3600 + mm * 60, "endTime": 0, "active": bool(active),
+            "unlock": False, "workNoisy": suction, "priority": 0, "period": list(days),
+            "mapId": map_id or 0, "cleanAreas": [], "smartAreaIds": list(room_ids or []),
+            "cleanMode": 2 if room_ids else 0, "cleanTimes": int(passes),
+            "orderClean": bool(order), "closeSrc": "null",
+        }
+        if 0 <= slot < len(value):
+            value[slot] = entry
+        else:
+            value.append(entry)
+        policy["value"] = value
+        policy.setdefault("timeZone", -6.0)
+        await self.coordinator.api.set_clean_policy(policy)

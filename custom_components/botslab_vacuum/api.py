@@ -250,6 +250,31 @@ class BotslabApi:
             },
         )
 
+    # -- scheduling + zones ------------------------------------------------ #
+    async def get_clean_policy(self) -> dict:
+        """Return the scheduled-clean policy: {timeZone, value: [entries]}."""
+        data = await self.invoke_service("GetCleanPolicyList")
+        outer = json.loads(data.get("result") or "{}")
+        cpl = outer.get("CleanPolicyList")
+        if isinstance(cpl, str):
+            return json.loads(cpl) if cpl else {}
+        return cpl or {}
+
+    async def set_clean_policy(self, policy: dict) -> dict:
+        """Write the full scheduled-clean policy (SetCleanPolicyList)."""
+        return await self.invoke_service(
+            "SetCleanPolicyList",
+            {"CleanPolicyList": json.dumps(policy, separators=(",", ":"))},
+        )
+
+    async def set_zones(self, zones: list[dict]) -> dict:
+        return await self.invoke_service(
+            "SetZones", {"ZonesList": json.dumps({"zones": zones}, separators=(",", ":"))}
+        )
+
+    async def start_clean_in_zones(self) -> dict:
+        return await self.invoke_service("StartCleanInZones")
+
     async def set_desired_property(self, identifier: str, value) -> dict:
         """POST /set_desired_property — items = JSON string {identifier: value}."""
         return await self._post(

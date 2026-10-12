@@ -8,7 +8,10 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .coordinator import BotslabCoordinator
 
-PLATFORMS = [Platform.VACUUM, Platform.SENSOR, Platform.CAMERA]
+PLATFORMS = [
+    Platform.VACUUM, Platform.SENSOR, Platform.CAMERA,
+    Platform.NUMBER, Platform.SWITCH, Platform.SELECT,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

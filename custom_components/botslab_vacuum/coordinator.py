@@ -101,6 +101,8 @@ class BotslabMapCoordinator(DataUpdateCoordinator):
         self.main = main
         self._tag: str | None = None
         self._png: bytes | None = None
+        self.rooms: list[dict] = []
+        self.map_id: int | None = None
 
     async def _fetch_bin(self):
         try:
@@ -119,10 +121,16 @@ class BotslabMapCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(str(err)) from err
         if not text:
             return self._png
+        from . import map_render
+        try:  # cheap: parse room/map metadata every cycle
+            meta = map_render.parse_map(text)
+            self.rooms = map_render.rooms(meta)
+            self.map_id = meta.get("mapId")
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Botslab map meta parse failed: %s", err)
         if tag and tag == self._tag and self._png:
             return self._png
         try:
-            from . import map_render
             png = await self.hass.async_add_executor_job(map_render.render_png, text)
             self._png, self._tag = png, tag
         except Exception as err:  # noqa: BLE001 - rendering must never break polling
