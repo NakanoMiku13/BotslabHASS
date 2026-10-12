@@ -8,12 +8,14 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .coordinator import BotslabCoordinator
 
-PLATFORMS = [Platform.VACUUM, Platform.SENSOR]
+PLATFORMS = [Platform.VACUUM, Platform.SENSOR, Platform.CAMERA]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = BotslabCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
+    # map is best-effort: never block setup if the render/download fails
+    await coordinator.map_coordinator.async_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

@@ -1,7 +1,7 @@
 {
   "domain": "botslab_vacuum",
   "name": "Botslab Vacuum (360/Qihoo)",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "documentation": "https://gitlab.lab/nmiku13/botslab-cloud",
   "issue_tracker": "https://gitlab.lab/nmiku13/botslab-cloud/-/issues",
   "codeowners": ["@nmiku13"],

@@ -1,0 +1,56 @@
+title: Francisca
+views:
+  - title: Francisca
+    path: francisca
+    icon: mdi:robot-vacuum
+    type: masonry
+    cards:
+      - type: picture-entity
+        entity: camera.francisca_map
+        name: Mapa
+        show_name: false
+        show_state: false
+        camera_view: auto
+        aspect_ratio: "73%"
+
+      - type: vacuum
+        entity: vacuum.francisca
+
+      - type: glance
+        title: Estado
+        columns: 3
+        state_color: true
+        entities:
+          - entity: sensor.francisca_battery
+            name: Batería
+          - entity: sensor.francisca_status
+            name: Estado
+          - entity: sensor.francisca_suction
+            name: Succión
+          - entity: sensor.francisca_volume
+            name: Volumen
+          - entity: sensor.francisca_cleaning_area
+            name: Área
+          - entity: sensor.francisca_error_code
+            name: Error
+
+      - type: gauge
+        entity: sensor.francisca_battery
+        name: Batería
+        unit: "%"
+        min: 0
+        max: 100
+        needle: true
+        severity:
+          red: 0
+          yellow: 20
+          green: 50
+
+      - type: history-graph
+        title: Actividad (24 h)
+        hours_to_show: 24
+        entities:
+          - entity: sensor.francisca_status
+            name: Estado
+          - entity: sensor.francisca_battery
+            name: Batería

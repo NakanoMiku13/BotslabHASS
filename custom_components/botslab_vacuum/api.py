@@ -160,6 +160,61 @@ class BotslabApi:
             {"product_key": self._cfg.product_key, "device_name": self._cfg.device_name},
         )
 
+    # -- map --------------------------------------------------------------- #
+    async def get_property_full(self) -> dict:
+        """Full get_property data: {result: "<json>", extend: {s3_signs}, ...}."""
+        return await self._get(
+            "/v1/iot/device/get_property",
+            {"product_key": self._cfg.product_key, "device_name": self._cfg.device_name},
+        )
+
+    async def get_map_bin(self) -> tuple[str | None, str | None]:
+        """Resolve + download the current map package. Returns (bin_text, tag).
+
+        The robot uploads the map to Aliyun OSS; `get_property` gives the
+        aliyun:// URI (in MapPkgOssInfo / RecordedMapList) and `extend.s3_signs`
+        maps it to a time-limited signed HTTPS URL we can fetch directly.
+        """
+        data = await self.get_property_full()
+        try:
+            props = json.loads(data.get("result") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            props = {}
+        s3 = (data.get("extend") or {}).get("s3_signs") or {}
+        if not s3:
+            return None, None
+
+        def _obj(v):
+            if isinstance(v, str):
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    return {}
+            return v or {}
+
+        uri = tag = None
+        mi = _obj(props.get("MapPkgOssInfo"))
+        if mi.get("Url") and mi["Url"] in s3:
+            uri, tag = mi["Url"], mi.get("UploadID") or mi.get("CleanID")
+        if uri is None:  # fall back to a permanent saved map
+            rl = _obj(props.get("RecordedMapList"))
+            for r in rl.get("RecordedMaps", []):
+                u = r.get("PermBinSaveUrl")
+                if u and u in s3:
+                    uri, tag = u, r.get("FileID") or r.get("BinFileMd5")
+                    break
+        signed = s3.get(uri) if uri else None
+        if not signed:
+            return None, None
+        try:
+            async with self._session.get(
+                signed, timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                text = await resp.text()
+        except aiohttp.ClientError as exc:
+            raise BotslabError(f"map download failed: {exc}") from exc
+        return text, tag
+
     # -- control ----------------------------------------------------------- #
     async def _post(self, path: str, body: dict) -> dict:
         url = f"https://{self._cfg.host}{path}"

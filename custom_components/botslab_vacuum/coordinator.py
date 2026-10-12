@@ -40,6 +40,7 @@ class BotslabCoordinator(DataUpdateCoordinator[dict]):
             ),
         )
         self.device_title = entry.title or d.get(CONF_DEVICE_NAME, "Botslab")
+        self.map_coordinator = BotslabMapCoordinator(hass, self)
 
     async def _relogin(self) -> bool:
         """Refresh Q/T/sid from the stored email+password. Returns True on success."""
@@ -87,3 +88,43 @@ class BotslabCoordinator(DataUpdateCoordinator[dict]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except BotslabError as err:
             raise UpdateFailed(str(err)) from err
+
+
+class BotslabMapCoordinator(DataUpdateCoordinator):
+    """Fetches the map package, renders it to a PNG (cached by upload tag)."""
+
+    def __init__(self, hass: HomeAssistant, main: "BotslabCoordinator") -> None:
+        super().__init__(
+            hass, _LOGGER, name=f"{DOMAIN}_map",
+            update_interval=timedelta(seconds=60),
+        )
+        self.main = main
+        self._tag: str | None = None
+        self._png: bytes | None = None
+
+    async def _fetch_bin(self):
+        try:
+            return await self.main.api.get_map_bin()
+        except BotslabAuthError:
+            if await self.main._relogin():
+                return await self.main.api.get_map_bin()
+            raise
+
+    async def _async_update_data(self) -> bytes | None:
+        try:
+            text, tag = await self._fetch_bin()
+        except BotslabAuthError as err:
+            raise UpdateFailed(str(err)) from err
+        except BotslabError as err:
+            raise UpdateFailed(str(err)) from err
+        if not text:
+            return self._png
+        if tag and tag == self._tag and self._png:
+            return self._png
+        try:
+            from . import map_render
+            png = await self.hass.async_add_executor_job(map_render.render_png, text)
+            self._png, self._tag = png, tag
+        except Exception as err:  # noqa: BLE001 - rendering must never break polling
+            _LOGGER.warning("Botslab map render failed: %s", err)
+        return self._png
