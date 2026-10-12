@@ -1,145 +1,162 @@
-# botslab-cloud
+# Botslab Vacuum (360 / Qihoo) — Home Assistant integration
 
-Unofficial, read-only **cloud client for Botslab (360 / Qihoo) robot vacuums** —
-reverse-engineered from the official Android app, aimed at a Home Assistant
-integration. Validated against a **Botslab S8** ("Francisca").
+Unofficial Home Assistant integration for **Botslab / 360 (Qihoo) robot
+vacuums**, reverse-engineered from the official Android app
+(`com.visualworld.cloudsmart`). Developed and validated on a **Botslab S8**.
 
-> ⚠️ **Status: private / work-in-progress.** Reading works end-to-end. Control
-> (start / dock / suction) is mapped but not yet implemented. This is an
-> interoperability/personal-automation project for a device **you own**. Not
-> affiliated with or endorsed by 360 / Qihoo / Botslab.
+It gives you an **app-like experience in Home Assistant**: an interactive live
+map, room / zone / no-go cleaning, a routines (schedules) editor, full controls,
+and **autonomous login** (email + password — no manual token capture).
+
+> ⚠️ **Unofficial.** Not affiliated with or endorsed by 360 / Qihoo / Botslab.
+> It talks to the vendor cloud with your own account, for a device **you own**,
+> as a personal interoperability project. Use at your own risk.
 
 ---
 
-## What it does
+## Features
 
-A pure-standard-library Python client that reads the device shadow from the
-Botslab cloud using a captured 360 account session:
+- 🔐 **Autonomous login** — sign in with your Botslab/360 **email + password**;
+  the integration fetches and **self-refreshes** the session (Q/T/sid) on its
+  own, including recovering from "logged in on another device". No token capture.
+- 🗺️ **Live interactive map** — a rendered map (rooms, walls, dock, no-go,
+  **live robot position + heading**, cleaning path) shown through the
+  [xiaomi-vacuum-map-card] overlay (bundled & auto-loaded):
+  - **draw cleaning zones** and clean them,
+  - **tap rooms (in order)** to clean selected rooms,
+  - **draw no-go zones**.
+- 🧭 **Routines editor** — a custom card to create/edit/enable/delete the robot's
+  **native cleaning routines** (the same schedules the app shows): time, days,
+  rooms-in-order, suction, passes.
+- 🧹 **Controls** — `vacuum.*` entity (start / pause / stop / return / locate /
+  fan speed) + switches/selects/number for Auto-boost, mop mode, pad wetness,
+  volume.
+- 📊 **Sensors** — battery, status, error, suction, cleaning area, volume,
+  schedules.
+- 🧩 **Zero-config frontend** — the map and routines cards are **served and
+  auto-registered by the integration**; you don't add any Lovelace resources.
 
-| Endpoint | What you get |
+---
+
+## Installation
+
+### Via HACS (recommended)
+1. HACS → ⋮ → **Custom repositories** → add this repo's URL, category **Integration**.
+2. Install **Botslab Vacuum (360/Qihoo)**, then restart Home Assistant.
+   *(HACS custom repositories must be hosted on GitHub.)*
+
+### Manual
+Copy `custom_components/botslab_vacuum/` into your HA `config/custom_components/`
+and restart Home Assistant.
+
+> Requirement `pycryptodome` is installed automatically. The frontend cards are
+> bundled in the integration and auto-loaded — **no HACS frontend install and no
+> Lovelace resources are needed**.
+
+---
+
+## Configuration
+
+**Settings → Devices & Services → Add Integration → Botslab Vacuum**, then enter:
+
+- **Account email** and **password** (your Botslab / 360 account).
+- **Region** (default `na1`; others: `ap1`, `eu1`, `eu2`).
+
+The device is auto-discovered. On session expiry the integration re-logs-in
+automatically; if your password changes it raises a reauth prompt.
+
+> Your password is stored in Home Assistant's config entry (`.storage`), the
+> same as any other cloud integration.
+
+---
+
+## Dashboard
+
+Add a dashboard (or view) with the two cards — see
+[`ha/francisca.example.yaml`](ha/francisca.example.yaml) for a full example
+(map view + routines view). Both cards auto-load; just reference them:
+
+```yaml
+- type: custom:xiaomi-vacuum-map-card
+  entity: vacuum.<your_robot>
+  map_source: { camera: camera.<your_robot>_map }
+  calibration_source: { camera: true }
+  # map_modes: zone draw / room select / no-go  (see the example)
+
+- type: custom:botslab-routines-card
+  entity: vacuum.<your_robot>
+```
+
+**Room selection (map card ROOM mode)** needs per-room outlines in its
+`predefined_selections`. Copy them from the camera's `rooms` attribute
+(Developer Tools → States → `camera.<robot>_map` → `rooms`: a list of
+`{id, name, outline}` in vacuum coordinates). Zone and no-go drawing work
+without this. Re-copy if the robot re-saves/edits the map.
+
+---
+
+## Services
+
+| Service | What it does |
 |---|---|
-| `device/list` | your bound devices (name, model, online status, roles) |
-| `device/get_info` | product / device metadata |
-| `device/get_property` | **live reported state** (battery, status, suction, mop, location, consumables…) — richest |
-| `device/get_desired_property` | desired + reported shadow (`report[]`) |
+| `botslab_vacuum.clean_rooms` | clean rooms by id, in order (`room_ids`, `passes`, `suction`) |
+| `botslab_vacuum.clean_zones` | clean drawn rectangles (`zones` = `[[x1,y1,x2,y2],…]`, `repeats`, `suction`) |
+| `botslab_vacuum.set_no_go_zones` | create/replace/clear no-go zones (`zones`, `mode`) |
+| `botslab_vacuum.set_schedule` | create/replace a routine (`time`, `days`, `room_ids`, `suction`, `passes`, `active`, `slot`) |
+| `botslab_vacuum.delete_schedule` | remove a routine by `slot` |
 
-```console
-$ python3 botslab_client.py state
-== Device <DEVICE_NAME> (<PRODUCT_KEY>) ==
-  BatteryLevel          : 100
-  TEST_WorkingStatus    : 7
-  AutoBoost             : False
-  MoppingPadInstalled   : False
-  VolumeLevel           : 30
-  CurrentLocation       : [122,-2525,80]
-  ...
-  total properties reported: 40
-```
+Standard `vacuum.*` services (start/pause/stop/return_to_base/locate/set_fan_speed)
+also work.
 
 ---
 
-## Quick start
+## How it works
 
-```bash
-git clone <this repo>
-cd botslab-cloud
-cp .env.example .env         # then fill it in — see docs/SESSION-CAPTURE.md
-python3 botslab_client.py state
-```
+The vacuum is a cloud-shadow device; the app talks to `*-sapp-api.botslab.com`.
+Each device request needs a signed query (`sign = md5(appkey + m2 + sign_ts +
+sign_no + secret)`) and an `authorization: jws base64({Q, T, sid})` header. The
+session is bootstrapped headlessly: `UserIntf.login` (360 account crypto:
+`parad` = DES-CBC, key = RSA-1024, sig = md5) → `POST /v1/app/login` → `sid`.
+The map is downloaded from OSS (base64 + LZ4 occupancy grid + overlays) and
+rendered server-side (Pillow) into the camera image. Deep dive in
+[`docs/`](docs/) (`PROTOCOL.md`, `CONTROL.md`, `REVERSE-ENGINEERING.md`).
 
-No dependencies required (Python 3.9+). `certifi` is used automatically if present.
-
-All configuration — secrets, device ids and the 360 session — comes from the
-environment / `.env`. **Nothing sensitive is committed to this repo.**
-
----
-
-## How it works (short version)
-
-The Botslab S8 is a cloud-shadow device. The app (a Flutter app,
-`com.visualworld.cloudsmart`) talks to `*-sapp-api.botslab.com` over HTTPS.
-Device endpoints live under `/v1/iot/device/*` and are served by the
-"cloudspirit" layer. Each request needs three things:
-
-1. **Signed query params** — `sign = md5(appkey + m2 + sign_ts + sign_no + secret)`,
-   with `sign_ts` in unix seconds and `sign_no` a time-based UUID (v1) hex.
-2. **An authorization header** — `authorization: jws <base64(JSON{Q, T, sid})>`,
-   where `Q`/`T` are 360 account cookies and **`sid`** is the cloudspirit
-   session id. The **`sid` is mandatory** — with only `Q`/`T` the gateway
-   returns `code 1015 "Bad request"`.
-3. **Client-info params** — `ci_*`, `appch=fwq`, `ci_brand=google`,
-   `skillflag=online` (the dio/device layer's values).
-
-Full details, the error-code ladder, and the whole reverse-engineering journey
-are in [`docs/`](docs/):
-
-- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — endpoints, signing, auth, TSL vocabulary.
-- [`docs/SESSION-CAPTURE.md`](docs/SESSION-CAPTURE.md) — how to obtain `Q` / `T` / `sid`.
-- [`docs/REVERSE-ENGINEERING.md`](docs/REVERSE-ENGINEERING.md) — the full write-up.
+A standalone, dependency-free CLI client (`botslab_client.py`) is also included
+for testing reads/control from the shell.
 
 ---
 
-## Roadmap
+## Known issues / notes
 
-- [x] Sign algorithm + full param set
-- [x] Auth token `jws{Q, T, sid}`
-- [x] Read: `device/list`, `get_info`, `get_property`, `get_desired_property`
-- [x] `product/get_dsl` (TSL model) — needed `device_name` (authoritative command catalog)
-- [x] Control: `invoke_service` / `set_desired_property` (named TSL services) — validated live
-- [x] Home Assistant custom component (coordinator + vacuum + sensors + config/reauth flow)
-- [ ] Session refresh / headless login — **blocked** (see below); reauth flow ships meanwhile
-
-## Home Assistant integration
-
-`custom_components/botslab_vacuum/` is a config-flow integration (no HACS needed —
-copy the folder into `config/custom_components/` and restart HA). It creates a
-`vacuum.*` entity (start / pause / stop / return / locate / fan speed) plus
-battery / status / error / suction / cleaning-area / volume sensors, polling the
-cloud shadow every 30 s. Configure it by pasting a captured session
-(`Q`/`T`/`sid`/`m2`/sign-secret); the device is auto-discovered. On expiry it
-raises a **reauth** prompt for fresh `Q`/`T`/`sid`.
-
-Control mapping (authoritative, from the product DSL) is in [`docs/CONTROL.md`](docs/CONTROL.md).
-
-## Login / session automation — status
-
-A fully headless "email + password → session" login is **not currently
-feasible**: the 360 account login encrypts its payload (`parad`/`ret` = RSA-1024
-+ DES) inside a native, string-obfuscated `.so`, and the flow has captcha /
-device-verification branches. Worse, the `sid` cannot be fabricated — the server
-only accepts a real, registered session id. So automation would require native
-RE of the login crypto **and** the sid-registration flow (and may still hit
-captcha).
-
-What ships instead: **capture once + reauth on expiry**, with
-[`tools/extract_session.py`](tools/extract_session.py) turning a fresh capture
-into config values in one command. Pursuing true auto-login (native RE, or a
-frida-based session minter on a machine running the app) is future work.
+- **Robot heading** arrow uses a best-guess angle convention (`angle_conv` in
+  `map_render.py`); if it points the wrong way, adjust it (one line).
+- **No-go write** uses `SetFbdPlaces` (inline); the exact payload shape is not
+  fully confirmed — test with one zone first.
+- **Rename rooms / edit room partitions** is not implemented yet (needs an OSS
+  upload flow that isn't resolved).
+- **Map card ROOM outlines** are static config — regenerate after the robot
+  re-saves the map.
 
 ---
 
-## Related work
+## Credits
 
-[`juetthei/ha-360-vacuum`](https://github.com/juetthei/ha-360-vacuum) (May 2026)
-is a Home Assistant component for **360 AI CleanRobot S6** that talks to the
-**legacy** `q.smart.360.cn` cloud with cookie auth (`q`/`qid`/`sid`) and numeric
-`infoType` commands. The **Botslab S8 uses a different backend** —
-`*-sapp-api.botslab.com` with the `jws{Q,T,sid}` header, MD5 `sign`, and
-**named TSL services** — so that integration does not work for the S8 as-is.
-It is, however, an excellent structural template (coordinator, config flow,
-reauth-on-expiry), and it independently confirms that the 360 `sid` is the key
-credential and that there is no public automated-login path (both projects
-capture the session manually).
+- Map overlay: **[xiaomi-vacuum-map-card]** by Piotr Machowski (MIT), bundled
+  (v2.4.1) for out-of-the-box setup — install via HACS for updates.
+- Structural inspiration: [`juetthei/ha-360-vacuum`] (different, legacy
+  `q.smart.360.cn` backend / 360 S6 — not compatible with the S8, but a good
+  template; independently confirms `sid` is the key credential).
 
----
+[xiaomi-vacuum-map-card]: https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card
+[`juetthei/ha-360-vacuum`]: https://github.com/juetthei/ha-360-vacuum
 
 ## Security / privacy
 
-- Never commit your `.env`, captures (`*.pcap`/`*.pcapng`/`*.keylog`) or app
-  binaries — all are covered by `.gitignore`.
-- The 360 session (`Q`/`T`/`sid`) grants access to your account; treat it like a
-  password and rotate it (log out / re-capture) if it leaks.
+- Don't commit captures (`*.pcap`/`*.keylog`) or a real map fixture (your floor
+  plan) — covered by `.gitignore`.
+- Your account credentials live in HA's config entry; rotate your password if it
+  leaks.
 
 ## License
 
-TBD (private for now).
+MIT — see [`LICENSE`](LICENSE).

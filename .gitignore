@@ -14,6 +14,9 @@
 *.flows
 *.har
 
+# --- local test fixtures may contain a real home map (floor plan) ----------
+tests/fixtures/*.bin
+
 # --- reverse-engineering byproducts (binaries / dumps / copyrighted) -------
 *.so
 *.apk

@@ -1,0 +1,95 @@
+# Example Lovelace dashboard for the Botslab Vacuum integration.
+#
+# The custom cards (map + routines) are auto-loaded by the integration — you do
+# NOT need to add any Lovelace resources. Just add these cards to a dashboard.
+#
+# Replace "francisca" in the entity ids below with your device's slug (shown in
+# Developer Tools -> States, e.g. vacuum.<your_robot>).
+#
+# For the map card's ROOM mode, fill `predefined_selections` from the camera's
+# `rooms` attribute (Developer Tools -> States -> camera.<robot>_map -> rooms):
+# each room is {id, name, outline:[[x,y],...]} in vacuum coordinates. Zone and
+# no-go drawing work without it.
+
+title: Francisca
+views:
+  - title: Francisca
+    path: francisca
+    icon: mdi:robot-vacuum
+    type: masonry
+    cards:
+      - type: custom:xiaomi-vacuum-map-card
+        entity: vacuum.francisca
+        map_source:
+          camera: camera.francisca_map
+        calibration_source:
+          camera: true
+        vacuum_platform: default
+        map_modes:
+          - name: Zonas
+            icon: mdi:select-drag
+            selection_type: MANUAL_RECTANGLE
+            max_selections: 5
+            repeats_type: EXTERNAL
+            max_repeats: 2
+            service_call_schema:
+              service: botslab_vacuum.clean_zones
+              service_data:
+                entity_id: vacuum.francisca
+                zones: "[[selection]]"
+                repeats: "[[repeats]]"
+          - name: Cuartos
+            icon: mdi:floor-plan
+            selection_type: ROOM
+            max_selections: 20
+            repeats_type: EXTERNAL
+            max_repeats: 2
+            service_call_schema:
+              service: botslab_vacuum.clean_rooms
+              service_data:
+                entity_id: vacuum.francisca
+                room_ids: "[[selection]]"
+                passes: "[[repeats]]"
+            # predefined_selections: <generate from camera.francisca_map 'rooms' attribute>
+          - name: No-go
+            icon: mdi:cancel
+            selection_type: MANUAL_RECTANGLE
+            max_selections: 10
+            service_call_schema:
+              service: botslab_vacuum.set_no_go_zones
+              service_data:
+                entity_id: vacuum.francisca
+                zones: "[[selection]]"
+                mode: add
+
+      - type: vacuum
+        entity: vacuum.francisca
+
+      - type: glance
+        title: Estado
+        columns: 3
+        state_color: true
+        entities:
+          - entity: sensor.francisca_battery
+          - entity: sensor.francisca_status
+          - entity: sensor.francisca_suction
+          - entity: sensor.francisca_volume
+          - entity: sensor.francisca_cleaning_area
+          - entity: sensor.francisca_error_code
+
+      - type: entities
+        title: Ajustes
+        entities:
+          - entity: number.francisca_volume
+          - entity: switch.francisca_auto_boost
+          - entity: select.francisca_mop_mode
+          - entity: select.francisca_pad_wetness
+
+  - title: Rutinas
+    path: rutinas
+    icon: mdi:calendar-clock
+    type: masonry
+    cards:
+      - type: custom:botslab-routines-card
+        entity: vacuum.francisca
+        schedules_entity: sensor.francisca_schedules
