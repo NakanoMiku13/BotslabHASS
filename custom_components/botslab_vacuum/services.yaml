@@ -89,3 +89,55 @@ set_schedule:
         number:
           min: -1
           max: 20
+
+clean_zones:
+  name: Clean zones
+  description: Clean one or more free-drawn rectangles now (coords in vacuum mm).
+  target:
+    entity:
+      domain: vacuum
+      integration: botslab_vacuum
+  fields:
+    zones:
+      name: Zones
+      description: List of [x1,y1,x2,y2] rectangles in vacuum coordinates.
+      required: true
+      example: "[[1000,-2000,2000,-1000]]"
+      selector:
+        object:
+    repeats:
+      name: Passes
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 2
+    suction:
+      name: Suction level
+      description: 0 Quiet, 1 Normal, 2 Strong, 3 MAX.
+      selector:
+        number:
+          min: 0
+          max: 3
+
+set_no_go_zones:
+  name: Set no-go zones
+  description: Create/replace/clear forbidden (no-go) zones.
+  target:
+    entity:
+      domain: vacuum
+      integration: botslab_vacuum
+  fields:
+    zones:
+      name: Zones
+      description: List of [x1,y1,x2,y2] rectangles in vacuum coordinates (empty with mode=clear).
+      default: []
+      example: "[[1000,-2000,2000,-1000]]"
+      selector:
+        object:
+    mode:
+      name: Mode
+      default: replace
+      selector:
+        select:
+          options: [replace, add, clear]

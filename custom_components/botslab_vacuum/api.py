@@ -267,13 +267,57 @@ class BotslabApi:
             {"CleanPolicyList": json.dumps(policy, separators=(",", ":"))},
         )
 
-    async def set_zones(self, zones: list[dict]) -> dict:
-        return await self.invoke_service(
-            "SetZones", {"ZonesList": json.dumps({"zones": zones}, separators=(",", ":"))}
-        )
+    async def set_zones(self, zones: list[dict], map_id: int | None = None) -> dict:
+        args = {"ZonesList": json.dumps({"zones": zones}, separators=(",", ":"))}
+        if map_id is not None:
+            args["MapID"] = int(map_id)
+        return await self.invoke_service("SetZones", args)
 
     async def start_clean_in_zones(self) -> dict:
         return await self.invoke_service("StartCleanInZones")
+
+    async def clean_zones(self, zones: list[dict], map_id: int | None = None) -> dict:
+        """Configure one-off cleaning zones then start cleaning them."""
+        await self.set_zones(zones, map_id)
+        return await self.start_clean_in_zones()
+
+    async def set_fbd_places(self, map_id: int, places: list[dict]) -> dict:
+        """Set/replace the forbidden (no-go) zones (inline, no OSS upload).
+
+        FbdPlacesList wire shape mirrors the map's ``area[]`` items; confirm
+        against a live capture before relying on it.
+        """
+        return await self.invoke_service(
+            "SetFbdPlaces",
+            {"MapID": int(map_id),
+             "FbdPlacesList": json.dumps(places, separators=(",", ":"))},
+        )
+
+    async def get_clean_track(self, start_idx: int = 0) -> dict:
+        """One page of the live cleaning track (keys are lowercase: posArray...)."""
+        data = await self.invoke_service(
+            "GetCleanTrackWithPosIdx", {"StartPosIndex": int(start_idx)}
+        )
+        raw = data.get("result")
+        outer = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        tk = outer.get("Track", outer)
+        return json.loads(tk) if isinstance(tk, str) else (tk or {})
+
+    async def get_clean_track_all(self, max_points: int = 20000) -> list[list[int]]:
+        """Paginate the whole cleaning track -> concatenated [[x,y], ...] (mm)."""
+        pts: list[list[int]] = []
+        idx = 0
+        while len(pts) < max_points:
+            tk = await self.get_clean_track(idx)
+            seg = tk.get("posArray") or tk.get("PosArray") or []
+            if not seg:
+                break
+            pts.extend(seg)
+            total = int(tk.get("totalPoints") or tk.get("TotalPoints") or len(pts))
+            idx = len(pts)
+            if idx >= total:
+                break
+        return pts
 
     async def set_desired_property(self, identifier: str, value) -> dict:
         """POST /set_desired_property — items = JSON string {identifier: value}."""

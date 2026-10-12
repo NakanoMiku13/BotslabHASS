@@ -2,24 +2,39 @@
 
 The map `.bin` fetched from OSS is one or more concatenated JSON records; the
 map record carries an occupancy grid as base64(LZ4-block) plus world-space
-overlays (dock, robot, no-go zones, rooms). Pure helper: no Home Assistant deps.
+overlays (dock, robot, no-go zones, rooms). Pure helper: no Home Assistant deps
+(uses Pillow, which ships with HA core, and a pure-Python LZ4 block decoder).
+
+Rendering is split in two:
+  * ``build_map`` -> ``RenderedMap`` : the expensive, static-per-map base image
+    (occupancy grid, rooms, no-go, dock) + geometry; cache this by upload tag.
+  * ``compose_png`` : cheap live overlay (robot marker + heading + path) drawn
+    on a copy of the base; call this every poll/camera fetch.
 """
 from __future__ import annotations
 
 import base64
 import binascii
+import io
 import json
+import math
+from dataclasses import dataclass, field
 
 # occupancy cell values
 _UNKNOWN, _FLOOR, _WALL = 0, 127, 255
 
-# palette (RGBA)
-C_BG = (18, 22, 28, 0)         # unknown -> transparent
-C_FLOOR = (56, 108, 176, 255)  # free space
-C_WALL = (18, 32, 58, 255)     # walls/obstacles
+# palette (RGB)
+C_FLOOR = (236, 240, 245)
+C_WALL = (44, 56, 82)
+C_NOGO_FILL = (224, 74, 74, 70)
+C_NOGO_LINE = (224, 74, 74, 235)
+C_DOCK = (46, 196, 110)
+C_ROBOT = (255, 140, 0)
+C_PATH = (90, 200, 250, 210)
 ROOM_PALETTE = [
-    (122, 193, 255), (255, 193, 122), (160, 214, 160), (214, 160, 200),
-    (224, 208, 130), (150, 200, 214), (210, 150, 150), (180, 180, 230),
+    (122, 193, 255), (255, 193, 122), (150, 214, 160), (214, 150, 200),
+    (224, 208, 130), (150, 200, 214), (220, 150, 150), (178, 170, 230),
+    (160, 210, 200), (230, 180, 140), (190, 200, 150), (200, 160, 210),
 ]
 
 
@@ -31,8 +46,7 @@ def _b64name(s: str) -> str:
 
 
 def parse_map(bin_text: str) -> dict:
-    """Extract the map record (the one with a `map`/occupancy grid) from the
-    concatenated-JSON map package."""
+    """Extract the occupancy-grid record from the concatenated-JSON package."""
     dec = json.JSONDecoder()
     i, n = 0, len(bin_text)
     best = None
@@ -54,12 +68,7 @@ def parse_map(bin_text: str) -> dict:
 
 
 def lz4_block_decompress(src: bytes, out_size: int) -> bytes:
-    """Pure-Python LZ4 *block* decompression (no native dep / build toolchain).
-
-    The map grid is stored as base64(LZ4-block). We avoid the `lz4` pip package
-    because it has no prebuilt wheel for this runtime and fails to build in the
-    HA container.
-    """
+    """Pure-Python LZ4 *block* decompression (no native dep / build toolchain)."""
     out = bytearray(out_size)
     si = di = 0
     n = len(src)
@@ -96,8 +105,7 @@ def decode_grid(m: dict) -> bytes:
 def rooms(m: dict) -> list[dict]:
     """Return [{id, name, cleanTimes, vertexs(mm)}] from smartArea."""
     out = []
-    sa = (m.get("smartArea") or {}).get("value") or []
-    for r in sa:
+    for r in (m.get("smartArea") or {}).get("value") or []:
         out.append({
             "id": r.get("id"),
             "name": _b64name(r.get("name", "")) or f"Room {r.get('id')}",
@@ -107,76 +115,190 @@ def rooms(m: dict) -> list[dict]:
     return out
 
 
-def render_png(bin_text: str, scale: int = 4) -> bytes:
-    """Full map package text -> PNG bytes."""
+@dataclass
+class MapGeometry:
+    """World(mm)<->image(pixel) transform for a cropped, scaled map image."""
+    w: int
+    h: int
+    res: float               # meters / cell
+    x_min: float             # meters, world origin of grid (col 0)
+    y_min: float             # meters, world origin of grid (row 0, bottom)
+    cmin: int                # crop bbox in cell coords
+    rmin: int
+    cmax: int
+    rmax: int
+    scale: int
+
+    def w2p(self, wx_mm: float, wy_mm: float) -> tuple[float, float]:
+        cx = (wx_mm / 1000.0 - self.x_min) / self.res
+        cy = (wy_mm / 1000.0 - self.y_min) / self.res
+        return ((cx - self.cmin) * self.scale, (self.rmax - cy) * self.scale)
+
+    @property
+    def size(self) -> tuple[int, int]:
+        return ((self.cmax - self.cmin + 1) * self.scale,
+                (self.rmax - self.rmin + 1) * self.scale)
+
+    def calibration_points(self) -> list[dict]:
+        """3 non-collinear {vacuum:{x,y}, map:{x,y}} pairs for map cards."""
+        pts = [
+            (self.x_min * 1000.0, self.y_min * 1000.0),
+            (self.x_min * 1000.0 + 1000.0, self.y_min * 1000.0),
+            (self.x_min * 1000.0, self.y_min * 1000.0 + 1000.0),
+        ]
+        out = []
+        for vx, vy in pts:
+            px, py = self.w2p(vx, vy)
+            out.append({"vacuum": {"x": round(vx), "y": round(vy)},
+                        "map": {"x": round(px), "y": round(py)}})
+        return out
+
+
+@dataclass
+class RenderedMap:
+    base: "object"           # PIL.Image.Image (RGBA, cropped + scaled)
+    geom: MapGeometry
+    rooms: list = field(default_factory=list)
+    areas: list = field(default_factory=list)
+    dock: list | None = None
+    default_pose: list | None = None
+
+
+def _rgb_lut():
+    r = bytearray(256); g = bytearray(256); b = bytearray(256)
+    r[_FLOOR], g[_FLOOR], b[_FLOOR] = C_FLOOR
+    r[_WALL], g[_WALL], b[_WALL] = C_WALL
+    return bytes(r), bytes(g), bytes(b)
+
+
+def build_map(bin_text: str, scale: int = 6, margin_cells: int = 4) -> RenderedMap:
+    """Parse + decode + paint the static base image (cache by upload tag)."""
     from PIL import Image, ImageDraw
+
     m = parse_map(bin_text)
     w, h = int(m["width"]), int(m["height"])
     res = float(m["resolution"])
     x_min, y_min = float(m["x_min"]), float(m["y_min"])
     grid = decode_grid(m)
 
-    # base occupancy image (grid y=0 is bottom -> flip vertically)
-    base = Image.frombytes("L", (w, h), grid).transpose(Image.FLIP_TOP_BOTTOM)
-    pal = [0, 0, 0] * 256
-    for v, c in ((_UNKNOWN, C_BG), (_FLOOR, C_FLOOR), (_WALL, C_WALL)):
-        pal[v * 3:v * 3 + 3] = list(c[:3])
-    p = Image.new("P", base.size)
-    p.putpalette(pal)
-    p.putdata(base.getdata())
-    img = p.convert("RGBA")
-    # unknown -> transparent
-    px = img.load()
-    for yy in range(h):
-        for xx in range(w):
-            if grid_at(grid, w, h, xx, yy) == _UNKNOWN:
-                px[xx, h - 1 - yy] = C_BG
-    img = img.resize((w * scale, h * scale), Image.NEAREST)
+    lflip = Image.frombytes("L", (w, h), grid).transpose(Image.FLIP_TOP_BOTTOM)
+    alpha = lflip.point(lambda v: 0 if v == _UNKNOWN else 255)
 
-    draw = ImageDraw.Draw(img, "RGBA")
+    bbox = alpha.getbbox()  # (left, upper, right, lower) in flipped (top-origin) px
+    if bbox is None:
+        bbox = (0, 0, w, h)
+    left, upper, right, lower = bbox
+    left = max(0, left - margin_cells); upper = max(0, upper - margin_cells)
+    right = min(w, right + margin_cells); lower = min(h, lower + margin_cells)
 
-    def w2p(wx_mm, wy_mm):
-        cx = (wx_mm / 1000.0 - x_min) / res
-        cy = (wy_mm / 1000.0 - y_min) / res
-        return (cx * scale, (h - 1 - cy) * scale)
+    rlut, glut, blut = _rgb_lut()
+    rgb = Image.merge("RGB", (lflip.point(rlut), lflip.point(glut), lflip.point(blut)))
+    rgb.putalpha(alpha)
+    crop = rgb.crop((left, upper, right, lower))
+    crop = crop.resize(((right - left) * scale, (lower - upper) * scale), Image.NEAREST)
 
-    # rooms: translucent fills + labels
-    for idx, r in enumerate(rooms(m)):
-        if len(r["vertexs"]) < 3:
+    # cell-coord crop bbox (bottom-origin rows): row_top -> grid_y = h-1-row_top
+    geom = MapGeometry(
+        w=w, h=h, res=res, x_min=x_min, y_min=y_min,
+        cmin=left, cmax=right - 1, rmin=h - lower, rmax=h - 1 - upper, scale=scale,
+    )
+
+    rm = RenderedMap(base=crop.convert("RGBA"), geom=geom,
+                     rooms=rooms(m), areas=m.get("area") or [],
+                     dock=m.get("chargeHandlePos"),
+                     default_pose=(m.get("posArray") or [None])[0])
+
+    draw = ImageDraw.Draw(rm.base, "RGBA")
+    # rooms: translucent fill + outline + label
+    for idx, r in enumerate(rm.rooms):
+        v = r.get("vertexs") or []
+        if len(v) < 3:
             continue
-        poly = [w2p(x, y) for x, y in r["vertexs"]]
+        poly = [geom.w2p(x, y) for x, y in v]
         col = ROOM_PALETTE[idx % len(ROOM_PALETTE)]
-        draw.polygon(poly, fill=(col[0], col[1], col[2], 90))
-        cxs = sum(p[0] for p in poly) / len(poly)
-        cys = sum(p[1] for p in poly) / len(poly)
-        draw.text((cxs, cys), r["name"], fill=(255, 255, 255, 230), anchor="mm")
-
-    # no-go zones: red
-    for a in m.get("area", []):
+        draw.polygon(poly, fill=(col[0], col[1], col[2], 110))
+        draw.line(poly + [poly[0]], fill=(col[0], col[1], col[2], 255),
+                  width=max(1, scale // 3))
+        cx = sum(p[0] for p in poly) / len(poly)
+        cy = sum(p[1] for p in poly) / len(poly)
+        draw.text((cx, cy), r["name"], fill=(30, 36, 50, 255), anchor="mm")
+    # no-go zones
+    for a in rm.areas:
         v = a.get("vertexs") or []
         if len(v) >= 3:
-            draw.polygon([w2p(x, y) for x, y in v],
-                         fill=(220, 60, 60, 70), outline=(230, 70, 70, 230))
+            poly = [geom.w2p(x, y) for x, y in v]
+            draw.polygon(poly, fill=C_NOGO_FILL, outline=C_NOGO_LINE)
+    # dock glyph
+    if rm.dock:
+        _draw_dock(draw, geom.w2p(*rm.dock[:2]), scale)
+    return rm
 
-    # dock
-    if m.get("chargeHandlePos"):
-        dx, dy = w2p(*m["chargeHandlePos"])
-        r0 = max(5, scale * 2)
-        draw.ellipse([dx - r0, dy - r0, dx + r0, dy + r0],
-                     fill=(60, 200, 90, 255), outline=(255, 255, 255, 255), width=2)
 
-    # robot position(s) + heading
-    for pos in (m.get("posArray") or []):
-        rx, ry = w2p(pos[0], pos[1])
-        r0 = max(6, int(scale * 2.5))
-        draw.ellipse([rx - r0, ry - r0, rx + r0, ry + r0],
-                     fill=(255, 140, 0, 255), outline=(255, 255, 255, 255), width=2)
+def _draw_dock(draw, xy, scale):
+    x, y = xy
+    s = max(6, scale * 2)
+    draw.rectangle([x - s, y - s * 0.7, x + s, y + s * 0.7],
+                   fill=C_DOCK, outline=(255, 255, 255, 255), width=2)
+    draw.polygon([(x - s, y - s * 0.7), (x, y - s * 1.4), (x + s, y - s * 0.7)],
+                 fill=C_DOCK, outline=(255, 255, 255, 255))
 
-    import io
+
+def _parse_pose(pose):
+    if isinstance(pose, str):
+        try:
+            pose = json.loads(pose)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(pose, (list, tuple)) and len(pose) >= 2:
+        ang = float(pose[2]) if len(pose) >= 3 else 0.0
+        return float(pose[0]), float(pose[1]), ang
+    return None
+
+
+def _heading_rad(angle_raw: float, conv: str) -> float:
+    """Map the device angle to a screen-space heading (radians, screen y-down)."""
+    if conv == "deg_cw":
+        return math.radians(angle_raw)
+    if conv == "rad_ccw":
+        return -angle_raw
+    if conv == "rad_cw":
+        return angle_raw
+    # default deg_ccw: world CCW degrees -> screen (y flipped) => negate
+    return -math.radians(angle_raw)
+
+
+def compose_png(rm: RenderedMap, pose=None, path=None, angle_conv: str = "deg_ccw") -> bytes:
+    """Draw the live overlay (path + robot + heading) on a copy of the base."""
+    from PIL import Image, ImageDraw
+
+    img = rm.base.copy()
+    draw = ImageDraw.Draw(img, "RGBA")
+    g = rm.geom
+
+    if path:
+        pts = [g.w2p(p[0], p[1]) for p in path if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if len(pts) >= 2:
+            draw.line(pts, fill=C_PATH, width=max(2, g.scale // 2), joint="curve")
+
+    p = _parse_pose(pose) or (_parse_pose(rm.default_pose) if rm.default_pose else None)
+    if p:
+        x, y, ang = p
+        cx, cy = g.w2p(x, y)
+        r = max(7, int(g.scale * 2.2))
+        hr = _heading_rad(ang, angle_conv)
+        tip = (cx + math.cos(hr) * r * 1.8, cy + math.sin(hr) * r * 1.8)
+        base_l = (cx + math.cos(hr + 2.5) * r, cy + math.sin(hr + 2.5) * r)
+        base_r = (cx + math.cos(hr - 2.5) * r, cy + math.sin(hr - 2.5) * r)
+        draw.polygon([tip, base_l, base_r], fill=(255, 255, 255, 230))
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                     fill=C_ROBOT + (255,), outline=(255, 255, 255, 255), width=max(2, g.scale // 3))
+
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 
-def grid_at(grid: bytes, w: int, h: int, x: int, y: int) -> int:
-    return grid[y * w + x]
+def render_png(bin_text: str, scale: int = 6) -> bytes:
+    """Back-compat one-shot render (uses the map's own saved robot pose)."""
+    rm = build_map(bin_text, scale=scale)
+    return compose_png(rm)

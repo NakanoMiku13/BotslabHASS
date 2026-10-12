@@ -77,6 +77,23 @@ async def async_setup_entry(
         },
         "async_set_schedule",
     )
+    platform.async_register_entity_service(
+        "clean_zones",
+        {
+            vol.Required("zones"): vol.All(cv.ensure_list, [[vol.Coerce(float)]]),
+            vol.Optional("repeats", default=1): vol.In([1, 2]),
+            vol.Optional("suction"): vol.In([0, 1, 2, 3]),
+        },
+        "async_clean_zones",
+    )
+    platform.async_register_entity_service(
+        "set_no_go_zones",
+        {
+            vol.Optional("zones", default=[]): vol.All(cv.ensure_list, [[vol.Coerce(float)]]),
+            vol.Optional("mode", default="replace"): vol.In(["replace", "add", "clear"]),
+        },
+        "async_set_no_go_zones",
+    )
 
 
 class BotslabVacuum(CoordinatorEntity[BotslabCoordinator], StateVacuumEntity):
@@ -224,3 +241,55 @@ class BotslabVacuum(CoordinatorEntity[BotslabCoordinator], StateVacuumEntity):
         policy["value"] = value
         policy.setdefault("timeZone", -6.0)
         await self.coordinator.api.set_clean_policy(policy)
+
+    @staticmethod
+    def _rect_vertexs(z) -> list:
+        """[x1,y1,x2,y2] (mm) -> closed polygon vertexs."""
+        x1, y1, x2, y2 = (int(round(v)) for v in z[:4])
+        return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+
+    async def async_clean_zones(self, zones, repeats=1, suction=None) -> None:
+        """Clean free-drawn rectangles (vacuum mm coords from the map card)."""
+        map_id = self.coordinator.map_coordinator.map_id
+        out = []
+        for i, z in enumerate(zones):
+            if len(z) < 4:
+                continue
+            out.append({
+                "name": f"zone{i}", "id": i, "tag": "",
+                "active": "depth" if repeats == 2 else "normal",
+                "vertexs": self._rect_vertexs(z),
+            })
+        if not out:
+            raise HomeAssistantError("no valid zones supplied")
+        if suction is not None:
+            await self.coordinator.api.invoke_service(
+                SVC_SUCTION, {"Mode": SUCTION_MODE_DEFAULT, "Level": int(suction)}
+            )
+        await self.coordinator.api.clean_zones(out, map_id)
+        await self._after()
+
+    async def async_set_no_go_zones(self, zones=None, mode="replace") -> None:
+        """Create/replace/clear no-go (forbidden) zones."""
+        mc = self.coordinator.map_coordinator
+        map_id = mc.map_id
+        if map_id is None:
+            raise HomeAssistantError("map not loaded yet")
+        existing = list(mc.areas or [])
+        new = []
+        for z in (zones or []):
+            if len(z) >= 4:
+                new.append({"vertexs": self._rect_vertexs(z), "active": "forbid",
+                            "forbidType": "all", "tag": ""})
+        if mode == "clear":
+            result = []
+        elif mode == "add":
+            result = existing + new
+        else:  # replace
+            result = new
+        # (re)assign ids/names
+        for i, a in enumerate(result):
+            a["id"] = i
+            a.setdefault("name", f"rect{i}")
+        await self.coordinator.api.set_fbd_places(map_id, result)
+        await self._after()
