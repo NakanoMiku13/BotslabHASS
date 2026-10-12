@@ -1,6 +1,6 @@
-# Francisca dashboard (auto-generated card config).
-# NOTE: ROOM predefined_selections (outlines) are STATIC — regenerate from the
-# camera 'rooms' attribute whenever the robot re-saves the map (ids/outlines change).
+# Francisca dashboard (auto-generated).
+# ROOM predefined_selections (map card) are STATIC — regenerate from the camera
+# 'rooms' attribute if the robot re-saves the map (ids/outlines change).
 title: Francisca
 views:
 - title: Francisca
@@ -1146,11 +1146,6 @@ views:
       red: 0
       yellow: 20
       green: 50
-  - type: markdown
-    title: Programacion
-    content: Crea horarios con **Herramientas para desarrolladores -> Acciones ->
-      `botslab_vacuum.set_schedule`** (hora, dias, habitaciones en orden, succion
-      max/quiet, pasadas).
   - type: history-graph
     title: Actividad (24 h)
     hours_to_show: 24
@@ -1159,3 +1154,11 @@ views:
       name: Estado
     - entity: sensor.francisca_battery
       name: Bateria
+- title: Rutinas
+  path: rutinas
+  icon: mdi:calendar-clock
+  type: masonry
+  cards:
+  - type: custom:botslab-routines-card
+    entity: vacuum.francisca
+    schedules_entity: sensor.francisca_schedules

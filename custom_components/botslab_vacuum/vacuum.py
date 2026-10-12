@@ -94,6 +94,11 @@ async def async_setup_entry(
         },
         "async_set_no_go_zones",
     )
+    platform.async_register_entity_service(
+        "delete_schedule",
+        {vol.Required("slot"): vol.Coerce(int)},
+        "async_delete_schedule",
+    )
 
 
 class BotslabVacuum(CoordinatorEntity[BotslabCoordinator], StateVacuumEntity):
@@ -241,6 +246,19 @@ class BotslabVacuum(CoordinatorEntity[BotslabCoordinator], StateVacuumEntity):
         policy["value"] = value
         policy.setdefault("timeZone", -6.0)
         await self.coordinator.api.set_clean_policy(policy)
+        await self.coordinator.map_coordinator.async_request_refresh()
+
+    async def async_delete_schedule(self, slot: int) -> None:
+        """Remove the routine at the given slot index."""
+        policy = await self.coordinator.api.get_clean_policy()
+        value = policy.get("value") or []
+        if not (0 <= slot < len(value)):
+            raise HomeAssistantError(f"schedule slot {slot} out of range")
+        value.pop(slot)
+        policy["value"] = value
+        policy.setdefault("timeZone", -6.0)
+        await self.coordinator.api.set_clean_policy(policy)
+        await self.coordinator.map_coordinator.async_request_refresh()
 
     @staticmethod
     def _rect_vertexs(z) -> list:

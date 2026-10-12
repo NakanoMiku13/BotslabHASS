@@ -68,7 +68,55 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coordinator: BotslabCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(BotslabSensorEntity(coordinator, d) for d in SENSORS)
+    entities: list = [BotslabSensorEntity(coordinator, d) for d in SENSORS]
+    entities.append(BotslabSchedulesSensor(coordinator))
+    async_add_entities(entities)
+
+
+def _secs_to_hhmm(sec) -> str:
+    try:
+        sec = int(sec) % 86400
+        return f"{sec // 3600:02d}:{(sec % 3600) // 60:02d}"
+    except (TypeError, ValueError):
+        return "00:00"
+
+
+class BotslabSchedulesSensor(CoordinatorEntity, SensorEntity):
+    """Exposes the device's native cleaning routines for the routines card."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Schedules"
+    _attr_icon = "mdi:calendar-clock"
+
+    def __init__(self, main: BotslabCoordinator) -> None:
+        super().__init__(main.map_coordinator)
+        self._main = main
+        dn = main.entry.data["device_name"]
+        self._attr_unique_id = f"{dn}_schedules"
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, dn)})
+
+    @property
+    def native_value(self):
+        return len(self.coordinator.schedules or [])
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        out = []
+        for i, e in enumerate(self.coordinator.schedules or []):
+            out.append({
+                "slot": i,
+                "time": _secs_to_hhmm(e.get("startTime")),
+                "days": e.get("period") or [],
+                "room_ids": e.get("smartAreaIds") or [],
+                "suction": e.get("workNoisy"),
+                "passes": e.get("cleanTimes"),
+                "active": bool(e.get("active")),
+                "order": bool(e.get("orderClean")),
+            })
+        return {
+            "schedules": out,
+            "rooms": {r["id"]: r["name"] for r in (self.coordinator.rooms or [])},
+        }
 
 
 class BotslabSensorEntity(CoordinatorEntity[BotslabCoordinator], SensorEntity):

@@ -148,6 +148,8 @@ class BotslabMapCoordinator(DataUpdateCoordinator):
         self.rooms: list[dict] = []
         self.map_id: int | None = None
         self.areas: list[dict] = []
+        self.schedules: list[dict] = []
+        self.timezone: float | None = None
 
     async def _fetch_bin(self):
         try:
@@ -193,4 +195,10 @@ class BotslabMapCoordinator(DataUpdateCoordinator):
                     pass
             except Exception as err:  # noqa: BLE001 - render must never break polling
                 _LOGGER.warning("Botslab map build failed: %s", err)
+        try:  # cleaning routines (for the schedules sensor / routines card)
+            policy = await self.main.api.get_clean_policy()
+            self.schedules = policy.get("value") or []
+            self.timezone = policy.get("timeZone")
+        except BotslabError as err:
+            _LOGGER.debug("Botslab clean-policy fetch failed: %s", err)
         return self.current_png()

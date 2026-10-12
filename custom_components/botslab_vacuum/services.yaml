@@ -141,3 +141,20 @@ set_no_go_zones:
       selector:
         select:
           options: [replace, add, clear]
+
+delete_schedule:
+  name: Delete schedule
+  description: Remove a cleaning routine by its slot index.
+  target:
+    entity:
+      domain: vacuum
+      integration: botslab_vacuum
+  fields:
+    slot:
+      name: Slot
+      description: Routine index (from sensor.*_schedules attributes).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 20
