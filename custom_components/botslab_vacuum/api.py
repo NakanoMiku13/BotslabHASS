@@ -168,12 +168,37 @@ class BotslabApi:
             {"product_key": self._cfg.product_key, "device_name": self._cfg.device_name},
         )
 
+    @staticmethod
+    def _has_grid(text: str) -> bool:
+        """True if the package holds at least one occupancy-grid record."""
+        dec = json.JSONDecoder()
+        i, n = 0, len(text)
+        while i < n:
+            while i < n and text[i] in " \r\n\t":
+                i += 1
+            if i >= n:
+                break
+            try:
+                obj, i = dec.raw_decode(text, i)
+            except json.JSONDecodeError:
+                return False
+            data = obj.get("data", obj) if isinstance(obj, dict) else {}
+            if isinstance(data, dict) and "map" in data and "width" in data:
+                return True
+        return False
+
     async def get_map_bin(self) -> tuple[str | None, str | None]:
         """Resolve + download the current map package. Returns (bin_text, tag).
 
         The robot uploads the map to Aliyun OSS; `get_property` gives the
         aliyun:// URI (in MapPkgOssInfo / RecordedMapList) and `extend.s3_signs`
         maps it to a time-limited signed HTTPS URL we can fetch directly.
+
+        We try candidates in priority order and return the first that actually
+        contains a grid: the live temp upload (fresh only right after a clean;
+        its 1-day OSS object 404s once expired), then the permanent recorded
+        map. The signed permanent object is ``PermSaveUrl`` (``PermBinSaveUrl``
+        is often *not* in ``s3_signs``), so we try both.
         """
         data = await self.get_property_full()
         try:
@@ -192,28 +217,34 @@ class BotslabApi:
                     return {}
             return v or {}
 
-        uri = tag = None
+        candidates: list[tuple[str, str | None]] = []  # (aliyun uri, tag)
         mi = _obj(props.get("MapPkgOssInfo"))
-        if mi.get("Url") and mi["Url"] in s3:
-            uri, tag = mi["Url"], mi.get("UploadID") or mi.get("CleanID")
-        if uri is None:  # fall back to a permanent saved map
-            rl = _obj(props.get("RecordedMapList"))
-            for r in rl.get("RecordedMaps", []):
-                u = r.get("PermBinSaveUrl")
-                if u and u in s3:
-                    uri, tag = u, r.get("FileID") or r.get("BinFileMd5")
-                    break
-        signed = s3.get(uri) if uri else None
-        if not signed:
-            return None, None
-        try:
-            async with self._session.get(
-                signed, timeout=aiohttp.ClientTimeout(total=20)
-            ) as resp:
-                text = await resp.text()
-        except aiohttp.ClientError as exc:
-            raise BotslabError(f"map download failed: {exc}") from exc
-        return text, tag
+        if mi.get("Url"):
+            candidates.append((mi["Url"], mi.get("UploadID") or mi.get("CleanID")))
+        rl = _obj(props.get("RecordedMapList"))
+        for r in rl.get("RecordedMaps", []):
+            tag = r.get("FileID") or r.get("BinFileMd5")
+            for key in ("PermSaveUrl", "PermBinSaveUrl"):
+                u = r.get(key)
+                if u:
+                    candidates.append((u, tag))
+
+        for uri, tag in candidates:
+            signed = s3.get(uri)
+            if not signed:
+                continue
+            try:
+                async with self._session.get(
+                    signed, timeout=aiohttp.ClientTimeout(total=20)
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    text = await resp.text()
+            except aiohttp.ClientError:
+                continue
+            if self._has_grid(text):
+                return text, tag
+        return None, None
 
     # -- control ----------------------------------------------------------- #
     async def _post(self, path: str, body: dict) -> dict:

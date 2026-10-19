@@ -99,6 +99,11 @@ async def async_setup_entry(
         {vol.Required("slot"): vol.Coerce(int)},
         "async_delete_schedule",
     )
+    platform.async_register_entity_service(
+        "run_schedule",
+        {vol.Required("slot"): vol.Coerce(int)},
+        "async_run_schedule",
+    )
 
 
 class BotslabVacuum(CoordinatorEntity[BotslabCoordinator], StateVacuumEntity):
@@ -197,68 +202,42 @@ class BotslabVacuum(CoordinatorEntity[BotslabCoordinator], StateVacuumEntity):
     # -- custom services --------------------------------------------------- #
     async def async_clean_rooms(self, room_ids, passes=1, suction=None) -> None:
         """Clean the given rooms (by id, in order) via inline zone cleaning."""
-        rooms = {r["id"]: r for r in self.coordinator.map_coordinator.rooms}
-        zones = []
-        for rid in room_ids:
-            r = rooms.get(rid)
-            if not r or len(r.get("vertexs") or []) < 3:
-                continue
-            zones.append({
-                "name": r["name"], "id": rid, "tag": "",
-                "active": "depth" if passes == 2 else "normal",
-                "vertexs": r["vertexs"],
-            })
-        if not zones:
-            raise HomeAssistantError(
-                "No valid rooms selected (map not loaded yet, or unknown room ids). "
-                "See the 'rooms' attribute of this entity for valid ids."
-            )
-        if suction is not None:
-            await self.coordinator.api.invoke_service(
-                SVC_SUCTION, {"Mode": SUCTION_MODE_DEFAULT, "Level": int(suction)}
-            )
-        await self.coordinator.api.set_zones(zones)
-        await self.coordinator.api.start_clean_in_zones()
-        await self._after()
+        await self.coordinator.async_clean_rooms(room_ids, passes, suction)
 
+    # -- HA-driven routines (stored + executed by HA; native ones don't fire) -- #
     async def async_set_schedule(
         self, time, days, room_ids=None, suction="auto", passes=1,
         active=True, order=True, slot=-1,
     ) -> None:
-        """Create/replace a scheduled clean (SetCleanPolicyList)."""
-        hh, mm = (int(x) for x in time.split(":")[:2])
-        policy = await self.coordinator.api.get_clean_policy()
-        value = policy.get("value") or []
-        map_id = self.coordinator.map_coordinator.map_id
-        if map_id is None and value:
-            map_id = value[0].get("mapId", 0)
-        entry = {
-            "startTime": hh * 3600 + mm * 60, "endTime": 0, "active": bool(active),
-            "unlock": False, "workNoisy": suction, "priority": 0, "period": list(days),
-            "mapId": map_id or 0, "cleanAreas": [], "smartAreaIds": list(room_ids or []),
-            "cleanMode": 2 if room_ids else 0, "cleanTimes": int(passes),
-            "orderClean": bool(order), "closeSrc": "null",
+        """Create/replace an HA-driven routine (stored in HA, run by HA)."""
+        routine = {
+            "time": time,
+            "days": [int(d) for d in (days or [])],
+            "room_ids": [int(r) for r in (room_ids or [])],
+            "suction": suction,
+            "passes": 2 if int(passes) == 2 else 1,
+            "active": bool(active),
         }
-        if 0 <= slot < len(value):
-            value[slot] = entry
+        routines = self.coordinator.routines
+        if 0 <= slot < len(routines):
+            routines[slot] = routine
         else:
-            value.append(entry)
-        policy["value"] = value
-        policy.setdefault("timeZone", -6.0)
-        await self.coordinator.api.set_clean_policy(policy)
-        await self.coordinator.map_coordinator.async_request_refresh()
+            routines.append(routine)
+        await self.coordinator.save_routines(routines)
 
     async def async_delete_schedule(self, slot: int) -> None:
-        """Remove the routine at the given slot index."""
-        policy = await self.coordinator.api.get_clean_policy()
-        value = policy.get("value") or []
-        if not (0 <= slot < len(value)):
-            raise HomeAssistantError(f"schedule slot {slot} out of range")
-        value.pop(slot)
-        policy["value"] = value
-        policy.setdefault("timeZone", -6.0)
-        await self.coordinator.api.set_clean_policy(policy)
-        await self.coordinator.map_coordinator.async_request_refresh()
+        routines = self.coordinator.routines
+        if not (0 <= slot < len(routines)):
+            raise HomeAssistantError(f"routine slot {slot} out of range")
+        routines.pop(slot)
+        await self.coordinator.save_routines(routines)
+
+    async def async_run_schedule(self, slot: int) -> None:
+        """Run a stored routine immediately (manual trigger)."""
+        routines = self.coordinator.routines
+        if not (0 <= slot < len(routines)):
+            raise HomeAssistantError(f"routine slot {slot} out of range")
+        await self.coordinator.async_run_routine(routines[slot])
 
     @staticmethod
     def _rect_vertexs(z) -> list:

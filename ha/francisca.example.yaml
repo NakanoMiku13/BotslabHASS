@@ -62,8 +62,17 @@ views:
                 zones: "[[selection]]"
                 mode: add
 
-      - type: vacuum
+      - type: tile
         entity: vacuum.francisca
+        name: Francisca
+        features:
+          - type: vacuum-commands
+            commands:
+              - start_pause
+              - stop
+              - return_home
+              - locate
+              - fan_speed
 
       - type: glance
         title: Estado

@@ -106,6 +106,7 @@ class BotslabRoutinesCard extends HTMLElement {
             <div>${sx} · ${s.passes === 2 ? "2 pasadas" : "1 pasada"}</div>
           </div>
           <label class="inline"><input type="checkbox" data-act="toggle" data-slot="${s.slot}" ${s.active ? "checked" : ""}></label>
+          <button class="iconbtn" title="Ejecutar ahora" data-act="run" data-slot="${s.slot}">▶</button>
           <button class="iconbtn" data-act="edit" data-slot="${s.slot}">✎</button>
           <button class="iconbtn" data-act="del" data-slot="${s.slot}">🗑</button>
         </div>`;
@@ -114,8 +115,14 @@ class BotslabRoutinesCard extends HTMLElement {
       const slot = parseInt(el.dataset.slot, 10);
       const act = el.dataset.act;
       if (act === "toggle") el.addEventListener("change", (e) => this._toggle(slot, e.target.checked));
+      else if (act === "run") el.addEventListener("click", () => this._run(slot));
       else el.addEventListener("click", () => act === "edit" ? this._openEditor(slot) : this._delete(slot));
     });
+  }
+
+  async _run(slot) {
+    if (!confirm("¿Ejecutar esta rutina ahora?")) return;
+    await this._call("run_schedule", { slot });
   }
 
   _openEditor(slot) {
@@ -226,7 +233,9 @@ class BotslabRoutinesCard extends HTMLElement {
   }
 }
 
-customElements.define("botslab-routines-card", BotslabRoutinesCard);
+if (!customElements.get("botslab-routines-card")) {
+  customElements.define("botslab-routines-card", BotslabRoutinesCard);
+}
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "botslab-routines-card",

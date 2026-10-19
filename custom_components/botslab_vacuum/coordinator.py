@@ -1,12 +1,14 @@
 """DataUpdateCoordinator for Botslab Vacuum (auto re-login + live map)."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -16,10 +18,13 @@ from .const import (
     ATTR_STATUS, ATTR_STATUS_TEST, CONF_DEVICE_NAME, CONF_EMAIL, CONF_M2,
     CONF_PASSWORD, CONF_PRODUCT_KEY, CONF_Q, CONF_REGION, CONF_SID,
     CONF_SIGN_SECRET, CONF_T, DEFAULT_REGION, DEFAULT_SCAN_INTERVAL, DOMAIN,
-    WORKING_STATUS,
+    SUCTION_MODE_DEFAULT, SVC_START, SVC_SUCTION, WORKING_STATUS,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# routine suction name -> SuctionPowLevel (None = leave as-is / "auto")
+SUCTION_LEVELS = {"quiet": 0, "normal": 1, "strong": 2, "max": 3}
 
 _CLEANING_INTERVAL = 10
 _IDLE_INTERVAL = DEFAULT_SCAN_INTERVAL
@@ -46,7 +51,153 @@ class BotslabCoordinator(DataUpdateCoordinator[dict]):
         self.device_title = entry.title or d.get(CONF_DEVICE_NAME, "Botslab")
         self.robot_pose = None           # [x_mm, y_mm, angle_raw]
         self.robot_path: list | None = None
+        self._seq_task = None            # running sequential room-clean task
         self.map_coordinator = BotslabMapCoordinator(hass, self)
+
+    # -- HA-driven routines (stored in entry.options; executed by HA) -------- #
+    @property
+    def routines(self) -> list[dict]:
+        return list(self.entry.options.get("routines", []))
+
+    async def save_routines(self, routines: list[dict]) -> None:
+        self.hass.config_entries.async_update_entry(
+            self.entry, options={**self.entry.options, "routines": routines}
+        )
+        self.async_update_listeners()  # refresh the schedules sensor
+
+    def is_cleaning(self) -> bool:
+        return self._is_cleaning(self.data or {})
+
+    # Robot's inline zone cleaning caps the zone count (~20 accepted, 40 rejected).
+    _MAX_TOTAL_ZONES = 16
+    # Per-room rectangle budget when each room is its own job (sequential).
+    _MAX_ROOM_ZONES = 12
+
+    @staticmethod
+    def _build_zones(selected: list, passes: int, budget: int) -> list:
+        """Tile each room with maximal rectangles -> list of zone dicts.
+
+        The robot's zone cleaning only accepts *rectangles*, not room outlines
+        (it rejects a raw polygon with "can't clean this room"). Each room is
+        covered with rectangles that stay inside it (``room_cover_rects``) so we
+        clean the real room shape — no spill into neighbours — without the OSS
+        partition-file upload that native area cleaning requires.
+        """
+        from . import map_render
+
+        active = "depth" if passes == 2 else "normal"
+        zones: list = []
+        for r in selected:
+            for x1, y1, x2, y2 in map_render.room_cover_rects(
+                r.get("vertexs") or [], max_rects=budget
+            ):
+                zones.append({
+                    "name": r.get("name", f"room{r.get('id')}"), "id": len(zones),
+                    "tag": "", "active": active,
+                    "vertexs": [[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
+                })
+        return zones
+
+    async def _set_suction(self, suction) -> None:
+        if suction is not None:
+            await self.api.invoke_service(
+                SVC_SUCTION, {"Mode": SUCTION_MODE_DEFAULT, "Level": int(suction)}
+            )
+
+    async def async_clean_rooms(
+        self, room_ids, passes=1, suction=None, sequential=None
+    ) -> None:
+        """Clean rooms by id via inline zone cleaning. suction=int|None.
+
+        With several rooms, zone cleaning does not preserve the requested order
+        (the robot path-optimises across all zones). To honour the order, clean
+        each room as its own job in sequence (``sequential``); this runs in the
+        background so the service/time-trigger returns immediately. A single
+        room is always one combined job.
+        """
+        rooms = {r["id"]: r for r in self.map_coordinator.rooms}
+        selected = [rooms[rid] for rid in room_ids if rid in rooms]
+        if not selected:
+            raise HomeAssistantError(
+                "No valid rooms (map not loaded or unknown ids). See the vacuum "
+                "'rooms' attribute for valid ids."
+            )
+        if sequential is None:
+            sequential = len(selected) > 1
+
+        if sequential and len(selected) > 1:
+            if self._seq_task and not self._seq_task.done():
+                raise HomeAssistantError("A sequential room clean is already running.")
+            self._seq_task = self.hass.async_create_task(
+                self._run_rooms_sequential(selected, passes, suction)
+            )
+            return
+
+        budget = max(1, self._MAX_TOTAL_ZONES // len(selected))
+        zones = self._build_zones(selected, passes, budget)
+        if not zones:
+            raise HomeAssistantError("Could not derive cleanable zones from rooms.")
+        await self._set_suction(suction)
+        await self.api.clean_zones(zones, self.map_coordinator.map_id)
+        await self.async_request_refresh()
+
+    async def _run_rooms_sequential(self, selected, passes, suction) -> None:
+        """Clean rooms one at a time, in order, waiting for each to finish."""
+        await self._set_suction(suction)
+        map_id = self.map_coordinator.map_id
+        for r in selected:
+            zones = self._build_zones([r], passes, self._MAX_ROOM_ZONES)
+            if not zones:
+                _LOGGER.warning("Botslab: room %s has no cleanable zones, skipping",
+                                r.get("id"))
+                continue
+            try:
+                await self.api.clean_zones(zones, map_id)
+            except BotslabError as err:
+                _LOGGER.error("Botslab sequential clean of room %s failed: %s",
+                              r.get("id"), err)
+                break
+            await self._wait_until_idle()
+        await self.async_request_refresh()
+
+    async def _wait_until_idle(self, start_grace=90, timeout=2400, poll=15) -> None:
+        """Wait for a started clean to begin then finish (best-effort, bounded)."""
+        t0 = time.monotonic()
+        # let the clean actually start
+        while time.monotonic() - t0 < start_grace:
+            await self.async_request_refresh()
+            if self.is_cleaning():
+                break
+            await asyncio.sleep(5)
+        # then wait until it is no longer cleaning (2 confirming polls)
+        idle = 0
+        while time.monotonic() - t0 < timeout:
+            await asyncio.sleep(poll)
+            await self.async_request_refresh()
+            if self.is_cleaning():
+                idle = 0
+            else:
+                idle += 1
+                if idle >= 2:
+                    return
+
+    async def async_clean_whole(self, passes=1, suction=None) -> None:
+        if suction is not None:
+            await self.api.invoke_service(
+                SVC_SUCTION, {"Mode": SUCTION_MODE_DEFAULT, "Level": int(suction)}
+            )
+        await self.api.invoke_service(SVC_START, {"CleanTimes": int(passes)})
+        await self.async_request_refresh()
+
+    async def async_run_routine(self, routine: dict) -> None:
+        """Execute one routine now (rooms+order+passes+suction, or whole-house)."""
+        suction = SUCTION_LEVELS.get((routine.get("suction") or "").lower())
+        passes = 2 if int(routine.get("passes") or 1) == 2 else 1
+        room_ids = [int(x) for x in (routine.get("room_ids") or [])]
+        if room_ids:
+            await self.async_clean_rooms(room_ids, passes, suction)
+        else:
+            await self.async_clean_whole(passes, suction)
 
     async def _relogin(self) -> bool:
         """Refresh Q/T/sid from the stored email+password. Returns True on success."""
@@ -148,8 +299,6 @@ class BotslabMapCoordinator(DataUpdateCoordinator):
         self.rooms: list[dict] = []
         self.map_id: int | None = None
         self.areas: list[dict] = []
-        self.schedules: list[dict] = []
-        self.timezone: float | None = None
 
     async def _fetch_bin(self):
         try:
@@ -195,10 +344,4 @@ class BotslabMapCoordinator(DataUpdateCoordinator):
                     pass
             except Exception as err:  # noqa: BLE001 - render must never break polling
                 _LOGGER.warning("Botslab map build failed: %s", err)
-        try:  # cleaning routines (for the schedules sensor / routines card)
-            policy = await self.main.api.get_clean_policy()
-            self.schedules = policy.get("value") or []
-            self.timezone = policy.get("timeZone")
-        except BotslabError as err:
-            _LOGGER.debug("Botslab clean-policy fetch failed: %s", err)
         return self.current_png()

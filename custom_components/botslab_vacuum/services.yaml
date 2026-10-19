@@ -158,3 +158,20 @@ delete_schedule:
         number:
           min: 0
           max: 20
+
+run_schedule:
+  name: Run routine now
+  description: Immediately run a stored HA routine by its slot index.
+  target:
+    entity:
+      domain: vacuum
+      integration: botslab_vacuum
+  fields:
+    slot:
+      name: Slot
+      description: Routine index (from sensor.*_schedules attributes).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 50

@@ -73,23 +73,15 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-def _secs_to_hhmm(sec) -> str:
-    try:
-        sec = int(sec) % 86400
-        return f"{sec // 3600:02d}:{(sec % 3600) // 60:02d}"
-    except (TypeError, ValueError):
-        return "00:00"
-
-
 class BotslabSchedulesSensor(CoordinatorEntity, SensorEntity):
-    """Exposes the device's native cleaning routines for the routines card."""
+    """Exposes the HA-driven cleaning routines for the routines card."""
 
     _attr_has_entity_name = True
     _attr_name = "Schedules"
     _attr_icon = "mdi:calendar-clock"
 
     def __init__(self, main: BotslabCoordinator) -> None:
-        super().__init__(main.map_coordinator)
+        super().__init__(main)  # main coordinator holds the routines
         self._main = main
         dn = main.entry.data["device_name"]
         self._attr_unique_id = f"{dn}_schedules"
@@ -97,25 +89,24 @@ class BotslabSchedulesSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        return len(self.coordinator.schedules or [])
+        return len(self._main.routines)
 
     @property
     def extra_state_attributes(self) -> dict:
         out = []
-        for i, e in enumerate(self.coordinator.schedules or []):
+        for i, r in enumerate(self._main.routines):
             out.append({
                 "slot": i,
-                "time": _secs_to_hhmm(e.get("startTime")),
-                "days": e.get("period") or [],
-                "room_ids": e.get("smartAreaIds") or [],
-                "suction": e.get("workNoisy"),
-                "passes": e.get("cleanTimes"),
-                "active": bool(e.get("active")),
-                "order": bool(e.get("orderClean")),
+                "time": r.get("time"),
+                "days": r.get("days") or [],
+                "room_ids": r.get("room_ids") or [],
+                "suction": r.get("suction"),
+                "passes": r.get("passes"),
+                "active": bool(r.get("active")),
             })
         return {
             "schedules": out,
-            "rooms": {r["id"]: r["name"] for r in (self.coordinator.rooms or [])},
+            "rooms": {rm["id"]: rm["name"] for rm in (self._main.map_coordinator.rooms or [])},
         }
 
 

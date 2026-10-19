@@ -115,6 +115,90 @@ def rooms(m: dict) -> list[dict]:
     return out
 
 
+def _rasterize(poly: list, cell: int):
+    """Rasterize a polygon (mm) to a boolean occupancy grid of `cell`-mm cells."""
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+    w = max(1, int((x1 - x0) // cell) + 1)
+    h = max(1, int((y1 - y0) // cell) + 1)
+    n = len(poly)
+    grid = [[False] * w for _ in range(h)]
+    for r in range(h):
+        cy = y0 + (r + 0.5) * cell
+        xc = []
+        for i in range(n):
+            ax, ay = poly[i]
+            bx, by = poly[(i + 1) % n]
+            if (ay <= cy < by) or (by <= cy < ay):
+                xc.append(ax + (bx - ax) * (cy - ay) / (by - ay))
+        xc.sort()
+        for k in range(0, len(xc) - 1, 2):
+            ca = max(0, int((xc[k] - x0) // cell))
+            cb = min(w - 1, int((xc[k + 1] - x0) // cell))
+            for c in range(ca, cb + 1):
+                grid[r][c] = True
+    return grid, x0, y0, w, h
+
+
+def _largest_rect(grid, used, w: int, h: int):
+    """Largest all-free (grid True & not used) axis-aligned rectangle (histogram)."""
+    best = (0, 0, 0, 0, 0)  # area, r0, c0, r1, c1
+    heights = [0] * w
+    for r in range(h):
+        for c in range(w):
+            heights[c] = heights[c] + 1 if (grid[r][c] and not used[r][c]) else 0
+        stack = []
+        for c in range(w + 1):
+            cur = heights[c] if c < w else 0
+            start = c
+            while stack and stack[-1][1] > cur:
+                sc, sh = stack.pop()
+                area = sh * (c - sc)
+                if area > best[0]:
+                    best = (area, r - sh + 1, sc, r, c - 1)
+                start = sc
+            stack.append((start, cur))
+    return best
+
+
+def room_cover_rects(
+    poly: list, cell: int = 100, max_rects: int = 10, min_cov: float = 0.93
+) -> list[list[int]]:
+    """Cover a (rectilinear) room polygon with a few axis-aligned rectangles.
+
+    The robot's inline zone cleaning only accepts *rectangles*, not room
+    outlines, and caps the zone count (~20). A greedy maximal-rectangle cover
+    tiles the room interior with ``<= max_rects`` rectangles reaching ~``min_cov``
+    coverage, staying *inside* the room (no spill into neighbours). Returns
+    ``[[x1, y1, x2, y2], ...]`` in vacuum mm.
+    """
+    if len(poly) < 3:
+        return []
+    grid, x0, y0, w, h = _rasterize(poly, cell)
+    total = sum(row.count(True) for row in grid)
+    if not total:
+        return []
+    used = [[False] * w for _ in range(h)]
+    rects: list[list[int]] = []
+    covered = 0
+    for _ in range(max_rects):
+        area, r0, c0, r1, c1 = _largest_rect(grid, used, w, h)
+        if area <= 0:
+            break
+        for r in range(r0, r1 + 1):
+            for c in range(c0, c1 + 1):
+                used[r][c] = True
+        covered += area
+        rects.append([
+            int(x0 + c0 * cell), int(y0 + r0 * cell),
+            int(x0 + (c1 + 1) * cell), int(y0 + (r1 + 1) * cell),
+        ])
+        if covered / total >= min_cov:
+            break
+    return rects
+
+
 @dataclass
 class MapGeometry:
     """World(mm)<->image(pixel) transform for a cropped, scaled map image."""
